@@ -1,888 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795800930551,
+  "lastUpdate": 1795830490715,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "name": "Aaron Marten",
-            "username": "AaronRM",
-            "email": "AaronRM@users.noreply.github.com"
-          },
-          "committer": {
-            "name": "GitHub",
-            "username": "web-flow",
-            "email": "noreply@github.com"
-          },
-          "id": "6f96123c02aae9b2839d470e8b33aa7b543e4b5b",
-          "message": "chore(otlp_receiver): adjust rate limit test parameters for deterministic behavior (#3984)\n\n# Change summary\n\nFix the flakiness in `test_otlp_grpc_transient_rate_limit_rejection` by\nkeeping its rate-limit bucket deterministically saturated for the\nduration of the test.\n\nThe test pre-consumes the bucket and expects the next request to be\nrejected by the gRPC pre-decode saturation check. The original policy\nallowed one request-sized burst per second. Because bucket capacity\nrefills continuously, even a small scheduling delay could restore the\nsingle unit checked by the saturation probe. The request would then\nproceed to the weighted admission check, where it was still rejected but\nreturned  grpc-retry-pushback-ms: 1000 . This conflicted with the\nexpected fast-rejection response, which intentionally has no\nrequest-specific retry guidance.\n\nThe test now configures a one-unit-per-hour refill rate while retaining\nthe request-sized burst. This preserves the behavior under test but\nprevents wall-clock scheduling from selecting a different rejection\npath.\n\nThe shutdown signal is also sent immediately after the RPC completes,\nbefore response assertions. Previously, an assertion failure skipped\nshutdown and left the receiver running until nextest terminated the test\nafter 120 seconds, obscuring the original assertion failure as a\ntimeout.\n\n## Related issue\n\nAddresses the OTLP receiver flake reported in #2720\n\n## Validation\n\nRan 50 iterations of `test_otlp_grpc_transient_rate_limit_rejection`\nsuccessfully\n\n## User-facing changes\n\nNone. This is a test-only change.",
-          "timestamp": "2026-09-04T22:05:37Z",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/6f96123c02aae9b2839d470e8b33aa7b543e4b5b"
-        },
-        "date": 1788746123466,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -0.02977076545357704,
-            "unit": "%",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 100.19389366176384,
-            "unit": "%",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 100.61063651850705,
-            "unit": "%",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 43.557682291666666,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 44.828125,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 1891694.309869222,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 1892257.4817387871,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002997,
-            "unit": "seconds",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 21857215.5127343,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 21763534.374535795,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 11.550867534501595,
-            "unit": "bytes/log",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 2.5001325607299805,
-            "unit": "%",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 100.23132953264657,
-            "unit": "%",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 100.59123325849654,
-            "unit": "%",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 43.594140625,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 46.03125,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 1929020.1711230453,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 1880792.1069689523,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002906,
-            "unit": "seconds",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 21990683.629792843,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 21914324.696065586,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 11.692245808726089,
-            "unit": "bytes/log",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": -3.357999324798584,
-            "unit": "%",
-            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 100.13424282546626,
-            "unit": "%",
-            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 100.3979194161944,
-            "unit": "%",
-            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 225.56145833333332,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 228.96875,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 9474254.00761446,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 9792399.386195369,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002154,
-            "unit": "seconds",
-            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 52312550.18461223,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 52136280.17037329,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 5.342158558030094,
-            "unit": "bytes/log",
-            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": -1.2352558374404907,
-            "unit": "%",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 91.18246687799586,
-            "unit": "%",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 92.04505191383852,
-            "unit": "%",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 25.107942708333333,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 26.1328125,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 275609.6693576285,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 279014.1539888688,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.005558,
-            "unit": "seconds",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 8827644.99667647,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 8494098.153543118,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 31.63869958019637,
-            "unit": "bytes/log",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": -1.3019100427627563,
-            "unit": "%",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 91.46084724017511,
-            "unit": "%",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 93.49609402973456,
-            "unit": "%",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 25.824869791666668,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 26.48046875,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 269368.7320294638,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 272875.6707625282,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.00447,
-            "unit": "seconds",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 8635396.137484001,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 8311836.924855248,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 31.645899809803893,
-            "unit": "bytes/log",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 2.5301127433776855,
-            "unit": "%",
-            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 87.5627012021218,
-            "unit": "%",
-            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 89.41782423538521,
-            "unit": "%",
-            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 210.21979166666668,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 217.28515625,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 927111.1945374917,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 903654.2360436848,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.19945,
-            "unit": "seconds",
-            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 102011916.71901804,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 101511281.47390422,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 112.88821835842813,
-            "unit": "bytes/log",
-            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": -0.02453586272895336,
-            "unit": "%",
-            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 76.78683088606509,
-            "unit": "%",
-            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 78.08931629887728,
-            "unit": "%",
-            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 32.102604166666666,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 33.41796875,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 104332.37866511865,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 104357.977514877,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002696,
-            "unit": "seconds",
-            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 11405410.283057872,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 11371025.905824693,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 109.29121620272822,
-            "unit": "bytes/log",
-            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 0,
-            "unit": "%",
-            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 83.62413233521634,
-            "unit": "%",
-            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 85.71626914153131,
-            "unit": "%",
-            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 99.7828125,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 104.796875,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 441224.16729108826,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 441224.16729108826,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.003531,
-            "unit": "seconds",
-            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 48410329.92576931,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 48214834.67021958,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 109.71821925119441,
-            "unit": "bytes/log",
-            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": -1.756273627281189,
-            "unit": "%",
-            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 90.99790969482693,
-            "unit": "%",
-            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 91.96984163769795,
-            "unit": "%",
-            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 232.58033854166666,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 235.78125,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 14127653.344288591,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 14375773.586041065,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.023543,
-            "unit": "seconds",
-            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 79336648.92018673,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 79284298.97950254,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 5.518774238154595,
-            "unit": "bytes/log",
-            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 0.019614893943071365,
-            "unit": "%",
-            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 89.60010943570698,
-            "unit": "%",
-            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 91.48316403515595,
-            "unit": "%",
-            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 51.8703125,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 53.8515625,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 261001.92975438078,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 260950.7345018872,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.005564,
-            "unit": "seconds",
-            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 28829421.574180722,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 28784947.68738052,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 110.47840746342956,
-            "unit": "bytes/log",
-            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 3.08412504196167,
-            "unit": "%",
-            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 95.6748764847204,
-            "unit": "%",
-            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 96.73792373206476,
-            "unit": "%",
-            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 484.57200520833334,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 511.21484375,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 2050621.058081208,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 1987377.3421934869,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.11032,
-            "unit": "seconds",
-            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 221553311.8888216,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 221302797.44926247,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 111.48024443324444,
-            "unit": "bytes/log",
-            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 1.6541775465011597,
-            "unit": "%",
-            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 100.14423027457396,
-            "unit": "%",
-            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 100.40376594264512,
-            "unit": "%",
-            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 99.51432291666667,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 102.3203125,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 5021066.785925641,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 4938009.428937678,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.010578,
-            "unit": "seconds",
-            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 26782912.344758805,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 26638239.91170223,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 5.423827704298381,
-            "unit": "bytes/log",
-            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": -1.7376972436904907,
-            "unit": "%",
-            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 100.22427769190972,
-            "unit": "%",
-            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 100.60136573362041,
-            "unit": "%",
-            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 56.48359375,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 57.7109375,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 2469477.109236025,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 2512389.14417085,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002934,
-            "unit": "seconds",
-            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 13637010.783257337,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 13548365.713444924,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 5.42790547192795,
-            "unit": "bytes/log",
-            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - Egress Bytes Per Log"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -87998,6 +87118,886 @@ window.BENCHMARK_DATA = {
           {
             "name": "egress_bytes_per_log",
             "value": 108.15463181222329,
+            "unit": "bytes/log",
+            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Egress Bytes Per Log"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "renovate[bot]",
+            "username": "renovate[bot]",
+            "email": "29139614+renovate[bot]@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "04c87cad179a51c4d3228576aed0165265851d9f",
+          "message": "chore(deps): update rust patches and stable minors (#4842)\n\nThis PR contains the following updates:\n\n| Package | Type | Update | Change |\n|---|---|---|---|\n| [ahash](https://redirect.github.com/tkaitchuck/ahash) |\nworkspace.dependencies | patch | `0.8.12` → `0.8.14` |\n| [aws-config](https://redirect.github.com/smithy-lang/smithy-rs) |\nworkspace.dependencies | patch | `1.13.3` → `1.13.4` |\n|\n[aws-msk-iam-sasl-signer](https://redirect.github.com/yuhao-su/aws-msk-iam-sasl-signer-rs)\n| workspace.dependencies | patch | `1.0.1` → `1.0.2` |\n| [blake3](https://redirect.github.com/BLAKE3-team/BLAKE3) |\nworkspace.dependencies | patch | `1.8.7` → `1.8.8` |\n| [clap](https://redirect.github.com/clap-rs/clap) |\nworkspace.dependencies | patch | `4.6.9` → `4.6.10` |\n| [crc32fast](https://redirect.github.com/srijs/rust-crc32fast) |\nworkspace.dependencies | patch | `1.5.5` → `1.5.6` |\n| [hyper](https://hyper.rs)\n([source](https://redirect.github.com/hyperium/hyper)) |\nworkspace.dependencies | minor | `1.12.0` → `1.13.0` |\n| [pest](https://pest.rs/)\n([source](https://redirect.github.com/pest-parser/pest)) |\nworkspace.dependencies | patch | `2.9.6` → `2.9.7` |\n| [pest_derive](https://pest.rs/)\n([source](https://redirect.github.com/pest-parser/pest)) |\nworkspace.dependencies | patch | `2.9.6` → `2.9.7` |\n| [regex](https://redirect.github.com/rust-lang/regex) |\nworkspace.dependencies | patch | `1.13.1` → `1.13.2` |\n| [sha2](https://redirect.github.com/RustCrypto/hashes) |\nworkspace.dependencies | patch | `0.11.1` → `0.11.2` |\n| [toml](https://redirect.github.com/toml-rs/toml) |\nworkspace.dependencies | patch | `1.2.2+spec-1.1.0` → `1.2.3` |\n| [zstd](https://redirect.github.com/gyscos/zstd-rs) |\nworkspace.dependencies | patch | `0.14.4` → `0.14.5` |\n\n---\n\n### Release Notes\n\n<details>\n<summary>tkaitchuck/ahash (ahash)</summary>\n\n###\n[`v0.8.14`](https://redirect.github.com/tkaitchuck/aHash/releases/tag/v0.8.14)\n\n[Compare\nSource](https://redirect.github.com/tkaitchuck/ahash/compare/v0.8.13...v0.8.14)\n\n#### What's Changed\n\n- Fix some typos by\n[@&#8203;BaldDemian](https://redirect.github.com/BaldDemian) in\n[tkaitchuck/aHash#275](https://redirect.github.com/tkaitchuck/aHash/pull/275)\n- docs: fix typos by [@&#8203;dciug](https://redirect.github.com/dciug)\nin\n[tkaitchuck/aHash#280](https://redirect.github.com/tkaitchuck/aHash/pull/280)\n- Avoid \\[u64; 4] -> \\[u128; 2] conversion. by\n[@&#8203;briansmith](https://redirect.github.com/briansmith) in\n[tkaitchuck/aHash#266](https://redirect.github.com/tkaitchuck/aHash/pull/266)\n- feat: Update getrandom to 0.4 by\n[@&#8203;Marwes](https://redirect.github.com/Marwes) in\n[tkaitchuck/aHash#287](https://redirect.github.com/tkaitchuck/aHash/pull/287)\n- Update hashbrown benchmark link by\n[@&#8203;TheIronBorn](https://redirect.github.com/TheIronBorn) in\n[tkaitchuck/aHash#262](https://redirect.github.com/tkaitchuck/aHash/pull/262)\n- Add serialization to RandomState struct by\n[@&#8203;alexeysofin](https://redirect.github.com/alexeysofin) in\n[tkaitchuck/aHash#284](https://redirect.github.com/tkaitchuck/aHash/pull/284)\n- Fix typo in comment about Knuth's PRNG constant by\n[@&#8203;PallHaraldsson](https://redirect.github.com/PallHaraldsson) in\n[tkaitchuck/aHash#293](https://redirect.github.com/tkaitchuck/aHash/pull/293)\n- Make serde compatible with no_std feature in Cargo.toml by\n[@&#8203;Masterchef365](https://redirect.github.com/Masterchef365) in\n[tkaitchuck/aHash#289](https://redirect.github.com/tkaitchuck/aHash/pull/289)\n- Allow but don't require getrandom 0.4 by\n[@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#294](https://redirect.github.com/tkaitchuck/aHash/pull/294)\n- Bump Rust version we test with by\n[@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#296](https://redirect.github.com/tkaitchuck/aHash/pull/296)\n- Fix the quality issues raised in\n[#&#8203;292](https://redirect.github.com/tkaitchuck/ahash/issues/292).\nby [@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#295](https://redirect.github.com/tkaitchuck/aHash/pull/295)\n- Update Cargo.toml for getrandom on wasm by\n[@&#8203;Its-Just-Nans](https://redirect.github.com/Its-Just-Nans) in\n[tkaitchuck/aHash#290](https://redirect.github.com/tkaitchuck/aHash/pull/290)\n- fix: ensure consistent hashing for specialized owned and reference\ntypes by [@&#8203;agmbk](https://redirect.github.com/agmbk) in\n[tkaitchuck/aHash#286](https://redirect.github.com/tkaitchuck/aHash/pull/286)\n- Strengthen no panic checks by\n[@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#297](https://redirect.github.com/tkaitchuck/aHash/pull/297)\n- Make sure we don't depend on std without the cfg by\n[@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#298](https://redirect.github.com/tkaitchuck/aHash/pull/298)\n- Fix issues on other architectures by\n[@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#302](https://redirect.github.com/tkaitchuck/aHash/pull/302)\n- Revert reference specializations from\n[#&#8203;286](https://redirect.github.com/tkaitchuck/ahash/issues/286)\n(fixes\n[#&#8203;303](https://redirect.github.com/tkaitchuck/ahash/issues/303))\nby [@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#305](https://redirect.github.com/tkaitchuck/aHash/pull/305)\n- Simplify build flags for aes vs fallback by\n[@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#304](https://redirect.github.com/tkaitchuck/aHash/pull/304)\n- Merge master\n([#&#8203;302](https://redirect.github.com/tkaitchuck/ahash/issues/302),\n[#&#8203;305](https://redirect.github.com/tkaitchuck/ahash/issues/305),\n[#&#8203;304](https://redirect.github.com/tkaitchuck/ahash/issues/304))\ninto 0.8 by [@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck)\nin\n[tkaitchuck/aHash#306](https://redirect.github.com/tkaitchuck/aHash/pull/306)\n- Fix quality issues in finish, and optimize related paths by\n[@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#309](https://redirect.github.com/tkaitchuck/aHash/pull/309)\n- Test with SMHasher3 instead of rurban's SMHasher by\n[@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#308](https://redirect.github.com/tkaitchuck/aHash/pull/308)\n- Override BuildHasher::hash_one on stable as well by\n[@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#310](https://redirect.github.com/tkaitchuck/aHash/pull/310)\n- Merge master into release branch by\n[@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#311](https://redirect.github.com/tkaitchuck/aHash/pull/311)\n\n#### New Contributors\n\n- [@&#8203;BaldDemian](https://redirect.github.com/BaldDemian) made\ntheir first contribution in\n[tkaitchuck/aHash#275](https://redirect.github.com/tkaitchuck/aHash/pull/275)\n- [@&#8203;dciug](https://redirect.github.com/dciug) made their first\ncontribution in\n[tkaitchuck/aHash#280](https://redirect.github.com/tkaitchuck/aHash/pull/280)\n- [@&#8203;Marwes](https://redirect.github.com/Marwes) made their first\ncontribution in\n[tkaitchuck/aHash#287](https://redirect.github.com/tkaitchuck/aHash/pull/287)\n- [@&#8203;TheIronBorn](https://redirect.github.com/TheIronBorn) made\ntheir first contribution in\n[tkaitchuck/aHash#262](https://redirect.github.com/tkaitchuck/aHash/pull/262)\n- [@&#8203;alexeysofin](https://redirect.github.com/alexeysofin) made\ntheir first contribution in\n[tkaitchuck/aHash#284](https://redirect.github.com/tkaitchuck/aHash/pull/284)\n- [@&#8203;PallHaraldsson](https://redirect.github.com/PallHaraldsson)\nmade their first contribution in\n[tkaitchuck/aHash#293](https://redirect.github.com/tkaitchuck/aHash/pull/293)\n- [@&#8203;Masterchef365](https://redirect.github.com/Masterchef365)\nmade their first contribution in\n[tkaitchuck/aHash#289](https://redirect.github.com/tkaitchuck/aHash/pull/289)\n- [@&#8203;Its-Just-Nans](https://redirect.github.com/Its-Just-Nans)\nmade their first contribution in\n[tkaitchuck/aHash#290](https://redirect.github.com/tkaitchuck/aHash/pull/290)\n- [@&#8203;agmbk](https://redirect.github.com/agmbk) made their first\ncontribution in\n[tkaitchuck/aHash#286](https://redirect.github.com/tkaitchuck/aHash/pull/286)\n\n**Full Changelog**:\n<https://github.com/tkaitchuck/aHash/compare/v0.8.13...v0.8.14>\n\n###\n[`v0.8.13`](https://redirect.github.com/tkaitchuck/aHash/releases/tag/v0.8.13)\n\n[Compare\nSource](https://redirect.github.com/tkaitchuck/ahash/compare/v0.8.12...v0.8.13)\n\n#### What's Changed\n\nFixes a number of issues most notably\n[#&#8203;292](https://redirect.github.com/tkaitchuck/ahash/issues/292)\n\n**Full Changelog**:\n<https://github.com/tkaitchuck/aHash/compare/v0.8.12...v0.8.13>\n\n</details>\n\n<details>\n<summary>yuhao-su/aws-msk-iam-sasl-signer-rs\n(aws-msk-iam-sasl-signer)</summary>\n\n###\n[`v1.0.2`](https://redirect.github.com/yuhao-su/aws-msk-iam-sasl-signer-rs/blob/HEAD/CHANGELOG.md#102---2026-11-26)\n\n[Compare\nSource](https://redirect.github.com/yuhao-su/aws-msk-iam-sasl-signer-rs/compare/v1.0.1...v1.0.2)\n\n- Cap the token lifetime at the credentials' expiry, so clients refresh\nthe token before the credentials expire\n([#&#8203;14](https://redirect.github.com/yuhao-su/aws-msk-iam-sasl-signer-rs/issues/14),\n[#&#8203;17](https://redirect.github.com/yuhao-su/aws-msk-iam-sasl-signer-rs/issues/17))\n- Rewrite the examples, README and API docs\n([#&#8203;13](https://redirect.github.com/yuhao-su/aws-msk-iam-sasl-signer-rs/issues/13))\n\n</details>\n\n<details>\n<summary>BLAKE3-team/BLAKE3 (blake3)</summary>\n\n###\n[`v1.8.8`](https://redirect.github.com/BLAKE3-team/BLAKE3/releases/tag/1.8.8)\n\n[Compare\nSource](https://redirect.github.com/BLAKE3-team/BLAKE3/compare/1.8.7...1.8.8)\n\nversion 1.8.8\n\nChanges since 1.8.7:\n\n-\n[#&#8203;582](https://redirect.github.com/BLAKE3-team/BLAKE3/issues/582)\nadds some alignment optimizations to make performance more\n  consistent for short inputs.\n- Soundness fix in `blake3_xof_many_avx512`, which is public but hidden\n  (for benchmarks). Callers using the documented API are unaffected.\n- `Hash::to_hex` and `Hash::from_hex` are more likely to be constant\n  time.\n\n</details>\n\n<details>\n<summary>clap-rs/clap (clap)</summary>\n\n###\n[`v4.6.10`](https://redirect.github.com/clap-rs/clap/blob/HEAD/CHANGELOG.md#4610---2026-11-24)\n\n[Compare\nSource](https://redirect.github.com/clap-rs/clap/compare/v4.6.9...v4.6.10)\n\n##### Performance\n\n- Reduce per-argument parse overhead\n\n</details>\n\n<details>\n<summary>srijs/rust-crc32fast (crc32fast)</summary>\n\n###\n[`v1.5.6`](https://redirect.github.com/srijs/rust-crc32fast/compare/v1.5.5...v1.5.6)\n\n[Compare\nSource](https://redirect.github.com/srijs/rust-crc32fast/compare/v1.5.5...v1.5.6)\n\n</details>\n\n<details>\n<summary>hyperium/hyper (hyper)</summary>\n\n###\n[`v1.13.0`](https://redirect.github.com/hyperium/hyper/blob/HEAD/CHANGELOG.md#v1130-2026-11-23)\n\n[Compare\nSource](https://redirect.github.com/hyperium/hyper/compare/v1.12.0...v1.13.0)\n\n##### Bug Fixes\n\n- **client:** fail parked h2 request with connection error on close\n([#&#8203;4275](https://redirect.github.com/hyperium/hyper/issues/4275))\n([dea9acb5](https://redirect.github.com/hyperium/hyper/commit/dea9acb5344e0e34bb9196f5493464db68edd24a),\ncloses\n[#&#8203;4269](https://redirect.github.com/hyperium/hyper/issues/4269))\n- **http1:**\n- preserve streaming bodies when coercing HTTP/2 requests\n([#&#8203;4236](https://redirect.github.com/hyperium/hyper/issues/4236))\n([21da6a59](https://redirect.github.com/hyperium/hyper/commit/21da6a59db9a90631302e7b173c106b723b9065f))\n- prevent `SendRequest` from reporting ready while a request is pending\n([#&#8203;4247](https://redirect.github.com/hyperium/hyper/issues/4247))\n([47c725c4](https://redirect.github.com/hyperium/hyper/commit/47c725c459ede66e68ad705f7da9a901abbbdc17),\ncloses\n[#&#8203;4246](https://redirect.github.com/hyperium/hyper/issues/4246))\n- avoid adding connection-close to 101 responses\n([#&#8203;4248](https://redirect.github.com/hyperium/hyper/issues/4248))\n([ac3f9501](https://redirect.github.com/hyperium/hyper/commit/ac3f9501de373388fb9914e285134cfec2283bd8),\ncloses\n[#&#8203;4244](https://redirect.github.com/hyperium/hyper/issues/4244))\n- error when final body chunk is shorter than content-length\n([#&#8203;4270](https://redirect.github.com/hyperium/hyper/issues/4270))\n([75062064](https://redirect.github.com/hyperium/hyper/commit/750620646ba0777daa45be3d82bd1704dcf470b8))\n- drop Content-Length when a response also has Transfer-Encoding\n([#&#8203;4264](https://redirect.github.com/hyperium/hyper/issues/4264))\n([378f8479](https://redirect.github.com/hyperium/hyper/commit/378f8479b8b703d098b46de1cec9ea648f12ea69),\ncloses\n[#&#8203;4263](https://redirect.github.com/hyperium/hyper/issues/4263))\n- drain in-flight requests before dispatcher shutdown\n([#&#8203;4222](https://redirect.github.com/hyperium/hyper/issues/4222))\n([97fff93e](https://redirect.github.com/hyperium/hyper/commit/97fff93e53f9e6a993f2d6a25d50883b7b8752a7),\ncloses\n[#&#8203;4202](https://redirect.github.com/hyperium/hyper/issues/4202))\n- **http2:**\n- report zero body size hint for HEAD responses\n([#&#8203;4237](https://redirect.github.com/hyperium/hyper/issues/4237))\n([4e1c0fbb](https://redirect.github.com/hyperium/hyper/commit/4e1c0fbb9db68936c952c481321d96f536568283))\n- prevent requests from hanging during concurrent connection shutdown\nrace\n([#&#8203;4242](https://redirect.github.com/hyperium/hyper/issues/4242))\n([5634b91d](https://redirect.github.com/hyperium/hyper/commit/5634b91d607ba1b781699765b22f16fd6ec1c8b7))\n- strip all headers named in every Connection header\n([#&#8203;4271](https://redirect.github.com/hyperium/hyper/issues/4271))\n([a44e32a7](https://redirect.github.com/hyperium/hyper/commit/a44e32a7f85a1f98e34307ae17985c0bc1349a03))\n- keep connection open after rejecting CONNECT\n([#&#8203;4235](https://redirect.github.com/hyperium/hyper/issues/4235))\n([88520c3e](https://redirect.github.com/hyperium/hyper/commit/88520c3eaea391f8ba49591a84f8439998b76191))\n\n##### Features\n\n- **http2:** add an executor getter for server and client\n([#&#8203;4250](https://redirect.github.com/hyperium/hyper/issues/4250))\n([b638fc0d](https://redirect.github.com/hyperium/hyper/commit/b638fc0de351987f3eaffa2bdabd393c8679a9e8))\n\n</details>\n\n<details>\n<summary>pest-parser/pest (pest)</summary>\n\n###\n[`v2.9.7`](https://redirect.github.com/pest-parser/pest/releases/tag/v2.9.7)\n\n[Compare\nSource](https://redirect.github.com/pest-parser/pest/compare/v2.9.6...v2.9.7)\n\n#### What's Changed\n\n- ci: add gh actions lock by\n[@&#8203;tomtau](https://redirect.github.com/tomtau) in\n[#&#8203;1239](https://redirect.github.com/pest-parser/pest/pull/1239)\n- Reduce per-entry overhead of the stack guard and call-limit check by\n[@&#8203;tomtau](https://redirect.github.com/tomtau) in\n[#&#8203;1241](https://redirect.github.com/pest-parser/pest/pull/1241)\n\n**Full Changelog**:\n<https://github.com/pest-parser/pest/compare/v2.9.6...v2.9.7>\n\n#### Warning: Semantic Versioning\n\nNote that the node tag feature in 2.6.0 was a technically\nsemver-breaking change even though it is a backwards-compatible /\nnon-breaking change in the meta-grammar. There may be similar\nnon-breaking changes to the meta-grammar between minor versions in the\nfuture. These non-breaking changes, however, may translate into\nsemver-breaking changes due to the additional variants propagated from\nthe generated `Rule` enum.\n\nThis new feature caused issues in some Cargo version resolution\nsituations where Cargo mixed different versions of pest dependencies.\nFor this reason, these \"grammar non-breaking but semver-breaking\"\nchanges are now available only under the \"grammar-extras\" feature flag.\nIf you would like to use node tags (or other future grammar features),\nyou can do so by enabling this flag on the pest_derive crate in your\nCargo.toml:\n\n```\n...\npest_derive = { version = \"2.9\", features = [\"grammar-extras\"] }\n```\n\npest 2.9.3 and 2.9.4 required a `stacker` dependency which relies on a C\ncompiler toolchain; this was made optional for non-native targets and\ncan be opt-in enabled with the feature flag in those targets (see\n[native stack\nguard](https://redirect.github.com/pest-parser/pest#native-stack-guard)\nnotes in README):\n\n```\n...\npest = { version = \"2.9.5\", features = [\"stack-guard\"] }\n```\n\n</details>\n\n<details>\n<summary>rust-lang/regex (regex)</summary>\n\n###\n[`v1.13.2`](https://redirect.github.com/rust-lang/regex/blob/HEAD/CHANGELOG.md#1132-2026-11-17)\n\n[Compare\nSource](https://redirect.github.com/rust-lang/regex/compare/1.13.1...1.13.2)\n\n\\===================\nBug fixes:\n\n-\n[#&#8203;1333](https://redirect.github.com/rust-lang/regex/issues/1333):\n  Fix a glob syntax error in `package.include`.\n-\n[#&#8203;1388](https://redirect.github.com/rust-lang/regex/issues/1388),\n[#&#8203;1344](https://redirect.github.com/rust-lang/regex/issues/1344):\n  Panic in `BoundedBacktracker` when haystack length exceeds capacity.\n-\n[#&#8203;1389](https://redirect.github.com/rust-lang/regex/issues/1389):\n  Revert default pool capacity change.\n-\n[#&#8203;1394](https://redirect.github.com/rust-lang/regex/issues/1394),\n[#&#8203;1392](https://redirect.github.com/rust-lang/regex/issues/1392):\n  Allow Parser to be reused in `regex-syntax`.\n-\n[#&#8203;1395](https://redirect.github.com/rust-lang/regex/issues/1395),\n[#&#8203;1393](https://redirect.github.com/rust-lang/regex/issues/1393):\n  Make Position's Ord match Eq in `regex-syntax`.\n-\n[#&#8203;1400](https://redirect.github.com/rust-lang/regex/issues/1400):\nFix incorrect match offsets for alternations whose branches start with\nthe\n  same repetition.\n-\n[#&#8203;1415](https://redirect.github.com/rust-lang/regex/issues/1415):\n  Avoid PikeVM panic with excess capture slots.\n-\n[#&#8203;1417](https://redirect.github.com/rust-lang/regex/issues/1417):\n  The `Pattern` trait now requires `unsafe`.\n-\n[#&#8203;1419](https://redirect.github.com/rust-lang/regex/issues/1419):\n  Read the high half of a serialized `ByteSet` from the right offset.\n-\n[a1e367b](https://redirect.github.com/rust-lang/regex/commit/a1e367bbb6a51aaad2d0b23a74608c09a3a50b87):\n  Fix a bug when `WhichCaptures::None` is used.\n-\n[#&#8203;1406](https://redirect.github.com/rust-lang/regex/issues/1406):\n  Fix off-by-one error.\n\nEnhancements:\n\n-\n[80b9d14](https://redirect.github.com/rust-lang/regex/commit/80b9d14e4be9f0b703a742d11c064abce05f210b):\n  Add is_match_with to `regex-automata::meta::Regex`.\n\nPerformance:\n\n-\n[#&#8203;1352](https://redirect.github.com/rust-lang/regex/issues/1352):\n  Do codepoint range canonicalization in-place.\n\nDocumentation:\n\n-\n[#&#8203;1380](https://redirect.github.com/rust-lang/regex/issues/1380):\n  Document overflow for `Span::offset`.\n\n</details>\n\n<details>\n<summary>RustCrypto/hashes (sha2)</summary>\n\n###\n[`v0.11.2`](https://redirect.github.com/RustCrypto/hashes/compare/sha2-v0.11.1...sha2-v0.11.2)\n\n[Compare\nSource](https://redirect.github.com/RustCrypto/hashes/compare/sha2-v0.11.1...sha2-v0.11.2)\n\n</details>\n\n<details>\n<summary>toml-rs/toml (toml)</summary>\n\n###\n[`v1.2.3`](https://redirect.github.com/toml-rs/toml/compare/toml-v1.2.2...toml-v1.2.3)\n\n[Compare\nSource](https://redirect.github.com/toml-rs/toml/compare/toml-v1.2.2...toml-v1.2.3)\n\n</details>\n\n<details>\n<summary>gyscos/zstd-rs (zstd)</summary>\n\n###\n[`v0.14.5`](https://redirect.github.com/gyscos/zstd-rs/releases/tag/v0.14.5):\nzstd 0.14.5\n\n[Compare\nSource](https://redirect.github.com/gyscos/zstd-rs/compare/v0.14.4...v0.14.5)\n\n### zstd 0.14.5, zstd-safe 8.4.0, zstd-sys 2.2.0\n\nThis release bundles zstd 1.6.0, which fixes\n[CVE-2026-124851](https://www.cve.org/CVERecord?id=CVE-2026-124851) and\na\nbatch of memory-safety bugs ([upstream release\nnotes](https://redirect.github.com/facebook/zstd/releases/tag/v1.6.0)).\nUpdating is recommended. It also fixes three soundness issues in\nzstd-safe\n([#&#8203;401](https://redirect.github.com/gyscos/zstd-rs/issues/401),\n[#&#8203;415](https://redirect.github.com/gyscos/zstd-rs/issues/415),\n[#&#8203;416](https://redirect.github.com/gyscos/zstd-rs/issues/416)).\n\nWith `pkg-config`, the system's zstd library is used instead of the\nbundled\none: update it to 1.6.0 to get the upstream fixes.\n\nRust 1.64 remains supported.\n\n#### zstd-sys 2.2.0+zstd.1.6.0\n\n- Bundle zstd 1.6.0\n([#&#8203;420](https://redirect.github.com/gyscos/zstd-rs/issues/420),\nthanks [@&#8203;emschwartz](https://redirect.github.com/emschwartz)). It\nalso fixes the wasm build\n  with zstd 1.6.0.\n- zstd 1.6.0 made these part of its stable API, so they no longer need\nthe\n  `experimental` feature: `ZSTD_getFrameHeader`, `ZSTD_FrameHeader`,\n  `ZSTD_FrameType_e`, `ZSTD_createDDict_byReference`,\n`ZSTD_CCtx_loadDictionary_advanced`,\n`ZSTD_DCtx_loadDictionary_advanced`,\n  `ZSTD_dictContentType_e` and `ZSTD_dictLoadMethod_e`.\n- `experimental`: zstd 1.6.0 removed `ZSTD_copyCCtx` and\n`ZSTD_copyDCtx`, and\n  added `ZSTD_isDeterministicBuild`.\n- zstd 1.6.0 disables legacy format support by default, but the `legacy`\n  feature keeps working as before (on by default).\n\n#### zstd-safe 8.4.0\n\nNew API:\n\n- `get_frame_header()` returns a frame's header (`FrameHeader`, zstd's\nown\n  struct), or how much of the frame it needs (`FrameHeaderStatus`).\n  `get_frame_header_advanced()` takes a `FrameFormat` (`experimental`).\n- `CCtx::load_dictionary_advanced()` and\n`DCtx::load_dictionary_advanced()`\ntake a `DictContentType`. `ref_dictionary()` borrows the dictionary\ninstead\n  of copying it.\n- `DDict::create_by_reference()` no longer needs `experimental`.\n- Worker threads with owned data: `CCtx::set_cdict()`,\n`CCtx::set_prefix()`,\n  `CCtx::compress_with_cdict()`, `CCtx::compress_with_prefix()`,\n  `CDict::create_by_reference_owned()` (`experimental`), and\n  `CCtx::frame_workers()`, which tells how many workers a frame gets.\n\nFixes:\n\n- Leaking a `CCtx` in the middle of a multithreaded frame that reads a\nborrowed dictionary or prefix no longer lets the workers read it after\nthe\nborrow ends\n([#&#8203;401](https://redirect.github.com/gyscos/zstd-rs/issues/401),\n[#&#8203;411](https://redirect.github.com/gyscos/zstd-rs/issues/411)).\n- The block API no longer reads memory that an earlier one-shot call\nonly\nborrowed, or state zstd never set up\n([#&#8203;415](https://redirect.github.com/gyscos/zstd-rs/issues/415),\n[#&#8203;417](https://redirect.github.com/gyscos/zstd-rs/issues/417)).\n- `NoOp` no longer writes through a stale pointer when a `WriteBuf`'s\ncapacity changes between calls\n([#&#8203;416](https://redirect.github.com/gyscos/zstd-rs/issues/416),\n[#&#8203;417](https://redirect.github.com/gyscos/zstd-rs/issues/417)).\n- Worker tracking stays in step with zstd: in `compress2()` when the\n  destination panics, with stale pledged sizes, and with clamped\n`NbWorkers`\n([#&#8203;407](https://redirect.github.com/gyscos/zstd-rs/issues/407)).\n- One-shot calls end their session before the `WriteBuf` runs, so a\npanicking destination no longer leaves the context pointing at borrowed\nbuffers\n([#&#8203;409](https://redirect.github.com/gyscos/zstd-rs/issues/409)).\n\nBehaviour changes:\n\n- With worker threads, a streaming frame that reads borrowed data (a\nprefix\nfrom `ref_prefix()`, a `CDict` made by `create_by_reference()`, a\ndictionary\n  from `ref_dictionary()`) runs on the calling thread, and `JobSize`,\n`OverlapSizeLog` and `RSyncable` have no effect on it. `compress2()` and\n  the owned variants above keep the workers.\n- `NbWorkers` is refused (`parameter_unsupported`) without the `zstdmt`\n  feature, even when the linked zstd library has threads. `zstdmt` now\n  enables `alloc`.\n- `compress_block()` / `decompress_block()` run in block sessions of\ntheir\n  own: any other `&mut self` method ends the session, and a failed block\n  call poisons the context until a reset.\n- `WriteBuf`'s contract now says its capacity and pointer must not\nchange\n  while zstd-safe uses the buffer (they may between uses, as a `Vec`'s\n  does). Every implementation in this crate already did; check your own\n  `unsafe impl WriteBuf`.\n\n#### zstd 0.14.5\n\n- `DecoderDictionary::new()` and `try_new()` no longer need\n`experimental`.\n- `EncoderDictionary` is `Clone`, and `EncoderDictionary::from_cdict()`\nwraps\nany prepared dictionary. Encoders and compressors keep their own handle,\nso\n`with_prepared_dictionary()` only needs the dictionary's bytes to\noutlive\n  them.\n- `write::Encoder::with_prefix()` takes a prefix the encoder owns, and\n`bulk::Compressor::compress_with_prefix()` borrows one for a single\ncall:\n  both keep the worker threads.\n- Out of memory: failing to allocate a compression context now returns\nan\n  `OutOfMemory` error instead of panicking. The decoders report\n  `OutOfMemory` (they said `Other`), and so does zstd's own\n`memory_allocation` error, which no longer carries a `zstd::Error`. None\nof these errors allocate\n([#&#8203;414](https://redirect.github.com/gyscos/zstd-rs/issues/414),\nthanks [@&#8203;gleocadie](https://redirect.github.com/gleocadie), and\n[#&#8203;418](https://redirect.github.com/gyscos/zstd-rs/issues/418)).\n- `write::Encoder` no longer writes a second, empty frame when flushed\nwhile\n  a finish is being retried. Behaviour change: `write()` in that state\nreturns the \"encoder is finished\" error\n([#&#8203;404](https://redirect.github.com/gyscos/zstd-rs/issues/404)).\n- `AutoFinishEncoder` and `AutoFlushDecoder` no longer abort the process\nwhen the writer or callback panics while another panic unwinds\n([#&#8203;404](https://redirect.github.com/gyscos/zstd-rs/issues/404)).\n\n#### Upgrading with the `experimental` feature\n\nzstd-safe up to 8.2 has `CCtx::try_clone()` and `DCtx::try_clone()`\nbehind\n`experimental`, and they call the functions zstd 1.6.0 removed: with\n`experimental`, those versions no longer build against zstd-sys 2.2.0.\nUpdate to zstd-safe 8.4.0 (zstd 0.14.5), or stay on the previous\nzstd-sys\nwith `cargo update -p zstd-sys --precise 2.1.3+zstd.1.5.7`.\n\nThe same applies to the 0.13 line: zstd 0.13 picks up zstd-sys 2.2.0\n(and\nzstd 1.6.0) on `cargo update`, except with `experimental`.\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: (UTC)\n\n- Branch creation\n  - \"before 8am on Friday\"\n- Automerge\n  - At any time (no schedule defined)\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n👻 **Immortal**: This PR will be recreated if closed unmerged. Get\n[config\nhelp](https://redirect.github.com/renovatebot/renovate/discussions) if\nthat's undesired.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0NC4yNDkuMSIsInVwZGF0ZWRJblZlciI6IjQ0LjI2Mi4xIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6WyJkZXBlbmRlbmNpZXMiXX0=-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
+          "timestamp": "2026-11-27T04:26:05Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/04c87cad179a51c4d3228576aed0165265851d9f"
+        },
+        "date": 1795830489998,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 78.78667307665891,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 79.48175416924028,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 50.974609375,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 52.5,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 215621.61620648674,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 215715.47974593315,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.001999,
+            "unit": "seconds",
+            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 23646831.13586516,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 23581764.395521473,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 109.62046471452159,
+            "unit": "bytes/log",
+            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": -0.33415597677230835,
+            "unit": "%",
+            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 106.5841957654126,
+            "unit": "%",
+            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 109.33414694894148,
+            "unit": "%",
+            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 219.94869791666667,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 245.22265625,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 7115030.308207333,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 7259879.794355691,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.008663,
+            "unit": "seconds",
+            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 39906345.90188234,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 77862062.06028967,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 5.49683287220653,
+            "unit": "bytes/log",
+            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": -0.18413051962852478,
+            "unit": "%",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 101.51815169943264,
+            "unit": "%",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 105.52059405940595,
+            "unit": "%",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 113.54296875,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 119.35546875,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 1480925.5618099482,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 1479875.9922649576,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.001741,
+            "unit": "seconds",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 16841408.99710801,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 27660524.899395633,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 11.38028394617859,
+            "unit": "bytes/log",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": -0.14354349672794342,
+            "unit": "%",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 102.84303396650397,
+            "unit": "%",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 107.542878365831,
+            "unit": "%",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 113.52447916666667,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 115.99609375,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 1499517.4062329554,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 1499304.0793385387,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.001811,
+            "unit": "seconds",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 16852868.779248334,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 27679627.079685543,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 11.240460832123837,
+            "unit": "bytes/log",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 77.83980655248575,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 78.6845785543838,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 29.286979166666665,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 31.6875,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 103749.05510658711,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 103706.39513327026,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.009414,
+            "unit": "seconds",
+            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 11558634.598618453,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 11472984.562520368,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 111.45536959186333,
+            "unit": "bytes/log",
+            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0,
+            "unit": "%",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 91.47682850147889,
+            "unit": "%",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 92.1660149449195,
+            "unit": "%",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 25.115755208333333,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 25.765625,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 288203.2366132773,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 290677.8165871589,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002102,
+            "unit": "seconds",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 8118669.337257129,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 8891507.296124883,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 27.93013045363498,
+            "unit": "bytes/log",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0,
+            "unit": "%",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 89.83566906913526,
+            "unit": "%",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 90.81370596887822,
+            "unit": "%",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 24.4953125,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 25.21484375,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 279413.79673952237,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 277024.5506534919,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002191,
+            "unit": "seconds",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 7851196.411404127,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 8631698.537671085,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 28.341157463782217,
+            "unit": "bytes/log",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": -0.1601855456829071,
+            "unit": "%",
+            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 111.3766683925903,
+            "unit": "%",
+            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 113.25586592178772,
+            "unit": "%",
+            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 115.5703125,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 122.05078125,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 1925022.5975906258,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 1892938.31876059,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.001972,
+            "unit": "seconds",
+            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 10290995.626859305,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 20420938.768766154,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 5.436519259432279,
+            "unit": "bytes/log",
+            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 96.3120315988536,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 97.84827925572812,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 92.66575520833334,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 100.95703125,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 528596.2625517134,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 528434.3438874464,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.079547,
+            "unit": "seconds",
+            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 58768306.72841726,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 58734656.3677605,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 111.21212579804347,
+            "unit": "bytes/log",
+            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 96.33662698406415,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 97.09599256735831,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 458.00416666666666,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 478.59765625,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 1897481.9320070134,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 1929721.6507028376,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.300278,
+            "unit": "seconds",
+            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 216192285.59738103,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 216460453.96689802,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 112.03288594427082,
+            "unit": "bytes/log",
+            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": -0.42250534892082214,
+            "unit": "%",
+            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 87.21487510104141,
+            "unit": "%",
+            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 90.71761249708557,
+            "unit": "%",
+            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 186.33033854166666,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 190.69921875,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 13417027.483907145,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 13521031.746025136,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.024617,
+            "unit": "seconds",
+            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 73495086.63684425,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 80832421.25740291,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 5.435612312533033,
+            "unit": "bytes/log",
+            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": -0.14544372260570526,
+            "unit": "%",
+            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 110.18691921933193,
+            "unit": "%",
+            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 113.63000077802847,
+            "unit": "%",
+            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 219.65364583333334,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 233.5,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 3644586.494926567,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 3710063.8294185777,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.02248,
+            "unit": "seconds",
+            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 20379356.621773113,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 40782392.50618737,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 5.492993532935217,
+            "unit": "bytes/log",
+            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 88.27370999310507,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 92.62551868182874,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 197.735546875,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 211.07421875,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 902882.8015590969,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 949938.6105404559,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.007044,
+            "unit": "seconds",
+            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 102613801.97312485,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 102264555.86076277,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 108.02150879491464,
             "unit": "bytes/log",
             "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Egress Bytes Per Log"
           }
