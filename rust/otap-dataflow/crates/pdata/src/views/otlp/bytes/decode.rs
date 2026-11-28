@@ -170,6 +170,12 @@ where
         }
     }
 
+    /// Returns the buffer containing the serialized proto message being parsed
+    #[must_use]
+    pub fn buf(&self) -> &'a [u8] {
+        self.buf
+    }
+
     /// Advances the parser to the specified scalar field and returns its value as a byte slice,
     /// if found. Parsing proceeds from the current position in the buffer.
     #[inline]

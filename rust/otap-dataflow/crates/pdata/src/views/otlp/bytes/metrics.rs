@@ -37,8 +37,9 @@ use crate::schema::{SpanId, TraceId};
 use crate::views::otlp::bytes::common::{KeyValueIter, RawInstrumentationScope, RawKeyValue};
 use crate::views::otlp::bytes::decode::{
     FieldRanges, ProtoBytesParser, RepeatedFieldEncodings, RepeatedFieldProtoBytesParser,
-    RepeatedFixed64Iter, RepeatedVarintIter, decode_sint32, from_option_nonzero_range_to_primitive,
-    read_len_delim, read_varint, to_nonzero_range, validate_message_wire_format,
+    RepeatedFixed64Iter, RepeatedVarintIter, decode_sint32, field_value_range,
+    from_option_nonzero_range_to_primitive, read_len_delim, read_varint, to_nonzero_range,
+    validate_message_wire_format,
 };
 use crate::views::otlp::bytes::resource::RawResource;
 use otel_arrow_dfe_pdata_views::views::common::Str;
@@ -247,12 +248,62 @@ impl FieldRanges for MetricFieldRanges {
 /// Implementation of [`DataView`] backed by one of the buffers in Metric's "data" oneof field.
 pub struct RawData<'a> {
     field_num: u64,
+    /// bytes of the first occurrence of the selected oneof field's final run
     buf: &'a [u8],
+    /// the final run of occurrences of the selected oneof field in the Metric message.
+    /// The protobuf wire format allows the same embedded message field to be encoded more
+    /// than once, and decoders such as prost merge consecutive occurrences of the same oneof
+    /// variant, concatenating their repeated fields, while a different variant replaces them.
+    occurrences: DataOccurrences<'a>,
 }
 
-/// Implementation of [`GaugeView`]
+/// Iterator over the raw bytes of the occurrences of one `data` oneof variant in a serialized
+/// Metric, starting at a given offset of the Metric's buffer.
+///
+/// It walks the Metric's top-level fields directly instead of sharing a [`ProtoBytesParser`]
+/// state, so it does not allocate, can be copied to restart iteration, and is unaffected by
+/// other reads of the Metric. It stops at the end of the buffer or at the first malformed
+/// field framing, so the occurrences read before malformed bytes are kept.
+#[derive(Clone, Copy)]
+pub struct DataOccurrences<'a> {
+    buf: &'a [u8],
+    pos: usize,
+    field_num: u64,
+}
+
+impl<'a> Iterator for DataOccurrences<'a> {
+    type Item = &'a [u8];
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some((field, wire_type, start, end)) = next_field_range(self.buf, self.pos) {
+            self.pos = end;
+            if field == self.field_num && wire_type == wire_types::LEN {
+                return Some(&self.buf[start..end]);
+            }
+        }
+        self.pos = self.buf.len();
+        None
+    }
+}
+
+/// Reads the tag of the field at `pos` and returns its field number, wire type and value
+/// range, or `None` at the end of the buffer or when the field framing is malformed.
+fn next_field_range(buf: &[u8], pos: usize) -> Option<(u64, u64, usize, usize)> {
+    if pos >= buf.len() {
+        return None;
+    }
+    let (tag, next_pos) = read_varint(buf, pos)?;
+    let wire_type = tag & 7;
+    let (start, end) = field_value_range(buf, wire_type, next_pos)?;
+    Some((tag >> 3, wire_type, start, end))
+}
+
+/// Implementation of [`GaugeView`]. Reads data points from every occurrence of the
+/// Metric's gauge field, following protobuf merge semantics for repeated embedded
+/// message fields.
 pub struct RawGauge<'a> {
-    byte_parser: ProtoBytesParser<'a, GaugeFieldRanges>,
+    /// the final run of occurrences of the gauge field in the Metric message
+    occurrences: DataOccurrences<'a>,
 }
 
 /// Known field ranges for fields on Gauge messages
@@ -1122,6 +1173,43 @@ where
     }
 }
 
+/// Iterator of NumberDataPoint that reads data points from every occurrence of a metric
+/// data message. A Metric may encode the same oneof field more than once, and protobuf
+/// merge semantics concatenate the repeated fields of those occurrences, so this
+/// iterator walks the data points of each occurrence in order. Produces implementations
+/// of [`NumberDataPointView`] from byte slices containing serialized metric data messages.
+pub struct MergedNumberDataPointIter<'a> {
+    /// yields the raw bytes of each occurrence of the metric data message
+    occurrences: DataOccurrences<'a>,
+
+    /// data points of the occurrence currently being read
+    current: Option<NumberDataPointIter<'a, GaugeFieldRanges>>,
+}
+
+impl<'a> Iterator for MergedNumberDataPointIter<'a> {
+    type Item = RawNumberDataPoint<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(current) = self.current.as_mut()
+                && let Some(data_point) = current.next()
+            {
+                return Some(data_point);
+            }
+
+            // the previous occurrence is exhausted, move to the next one, if any
+            let occurrence = self.occurrences.next()?;
+            self.current = Some(NumberDataPointIter {
+                byte_parser: RepeatedFieldProtoBytesParser::from_byte_parser(
+                    &ProtoBytesParser::new(occurrence),
+                    GAUGE_DATA_POINTS,
+                    wire_types::LEN,
+                ),
+            });
+        }
+    }
+}
+
 /// Iterator of HistogramDatapoint - produces implementation of [`HistogramDataPointView`]
 /// from byte array containing a serialized Histogram message
 pub struct HistogramDataPointIter<'a> {
@@ -1347,17 +1435,39 @@ impl MetricView for RawMetric<'_> {
     }
 
     fn data(&self) -> Option<Self::Data<'_>> {
-        let (slice, field_num) = self.byte_parser.advance_to_find_oneof(&[
-            METRIC_GAUGE,
-            METRIC_SUM,
-            METRIC_HISTOGRAM,
-            METRIC_EXPONENTIAL_HISTOGRAM,
-            METRIC_SUMMARY,
-        ])?;
+        // Protobuf merge semantics for a oneof: the last variant encoded wins, and
+        // consecutive occurrences of that variant merge. Scan the Metric's top-level
+        // fields to find where the final run of the winning variant starts.
+        let buf = self.byte_parser.buf();
+        let mut selected: Option<(u64, &[u8], usize)> = None;
+        let mut pos = 0;
+        while let Some((field, wire_type, start, end)) = next_field_range(buf, pos) {
+            let is_data_field = matches!(
+                field,
+                METRIC_GAUGE
+                    | METRIC_SUM
+                    | METRIC_HISTOGRAM
+                    | METRIC_EXPONENTIAL_HISTOGRAM
+                    | METRIC_SUMMARY
+            );
+            if is_data_field
+                && wire_type == wire_types::LEN
+                && selected.is_none_or(|(field_num, _, _)| field_num != field)
+            {
+                selected = Some((field, &buf[start..end], pos));
+            }
+            pos = end;
+        }
 
+        let (field_num, slice, run_start) = selected?;
         Some(RawData {
             field_num,
             buf: slice,
+            occurrences: DataOccurrences {
+                buf,
+                pos: run_start,
+                field_num,
+            },
         })
     }
 
@@ -1413,7 +1523,7 @@ impl DataView<'_> for RawData<'_> {
 
     fn as_gauge(&self) -> Option<Self::Gauge<'_>> {
         (self.field_num == METRIC_GAUGE).then_some(RawGauge {
-            byte_parser: ProtoBytesParser::new(self.buf),
+            occurrences: self.occurrences,
         })
     }
 
@@ -1449,17 +1559,14 @@ impl GaugeView for RawGauge<'_> {
         Self: 'dp;
 
     type NumberDataPointIter<'dp>
-        = NumberDataPointIter<'dp, GaugeFieldRanges>
+        = MergedNumberDataPointIter<'dp>
     where
         Self: 'dp;
 
     fn data_points(&self) -> Self::NumberDataPointIter<'_> {
-        NumberDataPointIter {
-            byte_parser: RepeatedFieldProtoBytesParser::from_byte_parser(
-                &self.byte_parser,
-                GAUGE_DATA_POINTS,
-                wire_types::LEN,
-            ),
+        MergedNumberDataPointIter {
+            occurrences: self.occurrences,
+            current: None,
         }
     }
 }
@@ -2155,6 +2262,226 @@ mod test {
         };
         assert_eq!(number_dp_view.value(), Some(Value::Integer(1)));
         assert_eq!(number_dp_view.value(), Some(Value::Integer(1)));
+    }
+
+    /// Scenario: A serialized Metric repeats its gauge field, and each occurrence
+    /// carries one data point.
+    /// Guarantees: The bytes view merges repeated gauge occurrences and exposes
+    /// every data point, matching prost merge semantics for repeated embedded
+    /// message fields.
+    #[test]
+    fn test_repeated_gauge_fields_merge_data_points() {
+        use crate::proto::opentelemetry::metrics::v1::Gauge;
+
+        let data_point = |value: i64| NumberDataPoint {
+            time_unix_nano: value as u64,
+            value: Some(number_data_point::Value::AsInt(value)),
+            ..Default::default()
+        };
+
+        // Metric "temperature" with the gauge field encoded twice: the first
+        // occurrence is written by prost, the second is appended by hand so the
+        // payload keeps both gauge occurrences, as protobuf merge semantics allow.
+        let mut bytes = vec![];
+        Metric {
+            name: "temperature".into(),
+            data: Some(Data::Gauge(Gauge {
+                data_points: vec![data_point(1)],
+            })),
+            ..Default::default()
+        }
+        .encode(&mut bytes)
+        .unwrap();
+
+        let mut second_gauge = vec![];
+        Gauge {
+            data_points: vec![data_point(2)],
+        }
+        .encode(&mut second_gauge)
+        .unwrap();
+        bytes.push(((METRIC_GAUGE << 3) | wire_types::LEN) as u8);
+        bytes.push(second_gauge.len() as u8);
+        bytes.extend_from_slice(&second_gauge);
+
+        let metric_view = RawMetric {
+            byte_parser: ProtoBytesParser::new(&bytes),
+        };
+        // read the metric the same way the OTAP encoder does: the data oneof first,
+        // then the scalar fields, then the gauge data points. The scalar reads scan
+        // past the repeated gauge occurrences, so this ordering also guards against
+        // parser state that only remembers the last oneof occurrence seen.
+        let data = metric_view.data().expect("gauge data should exist");
+        let _ = metric_view.name();
+        let _ = metric_view.description();
+        let _ = metric_view.unit();
+        let _ = metric_view.metadata().count();
+        assert_eq!(data.value_type(), DataType::Gauge);
+        let gauge_view = data.as_gauge().expect("data should be a gauge");
+        let times: Vec<_> = gauge_view
+            .data_points()
+            .map(|dp| dp.time_unix_nano())
+            .collect();
+        assert_eq!(times, vec![1, 2]);
+    }
+
+    /// Builds a serialized Metric named "temperature" whose `data` oneof is encoded once per
+    /// entry of `occurrences`, in order, as protobuf merge semantics allow.
+    fn metric_with_data_occurrences(occurrences: &[(u64, Vec<u8>)]) -> Vec<u8> {
+        let mut bytes = vec![];
+        Metric {
+            name: "temperature".into(),
+            ..Default::default()
+        }
+        .encode(&mut bytes)
+        .unwrap();
+        for (field_num, message) in occurrences {
+            prost::encoding::encode_key(
+                *field_num as u32,
+                prost::encoding::WireType::LengthDelimited,
+                &mut bytes,
+            );
+            prost::encoding::encode_varint(message.len() as u64, &mut bytes);
+            bytes.extend_from_slice(message);
+        }
+        bytes
+    }
+
+    fn gauge_occurrence(times: &[u64]) -> (u64, Vec<u8>) {
+        use crate::proto::opentelemetry::metrics::v1::Gauge;
+        let gauge = Gauge {
+            data_points: times
+                .iter()
+                .map(|time| NumberDataPoint {
+                    time_unix_nano: *time,
+                    value: Some(number_data_point::Value::AsInt(*time as i64)),
+                    ..Default::default()
+                })
+                .collect(),
+        };
+        (METRIC_GAUGE, gauge.encode_to_vec())
+    }
+
+    fn sum_occurrence(times: &[u64]) -> (u64, Vec<u8>) {
+        let sum = Sum {
+            data_points: times
+                .iter()
+                .map(|time| NumberDataPoint {
+                    time_unix_nano: *time,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        (METRIC_SUM, sum.encode_to_vec())
+    }
+
+    fn gauge_times(metric_view: &RawMetric<'_>) -> Vec<u64> {
+        let data = metric_view.data().expect("data should exist");
+        let gauge = data.as_gauge().expect("data should be a gauge");
+        gauge.data_points().map(|dp| dp.time_unix_nano()).collect()
+    }
+
+    /// Scenario: A complete gauge occurrence is followed by a Metric field with truncated
+    /// framing (a description that declares 5 bytes but carries 1).
+    /// Guarantees: Best-effort decoding keeps the valid prefix, so the gauge data point
+    /// read before the malformed framing still surfaces.
+    #[test]
+    fn test_repeated_gauge_keeps_valid_prefix_before_malformed_framing() {
+        let mut bytes = metric_with_data_occurrences(&[gauge_occurrence(&[1])]);
+        bytes.extend_from_slice(&[0x12, 0x05, 0x78]);
+        let metric_view = RawMetric {
+            byte_parser: ProtoBytesParser::new(&bytes),
+        };
+        assert_eq!(gauge_times(&metric_view), vec![1]);
+    }
+
+    /// Scenario: The Metric encodes gauge, then sum, then gauge again.
+    /// Guarantees: Like prost, switching to another oneof variant discards the earlier
+    /// gauge, so only the data points of the final gauge occurrence surface.
+    #[test]
+    fn test_oneof_variant_change_resets_repeated_gauge() {
+        let bytes = metric_with_data_occurrences(&[
+            gauge_occurrence(&[1]),
+            sum_occurrence(&[10]),
+            gauge_occurrence(&[2]),
+        ]);
+        let Some(Data::Gauge(prost_gauge)) = Metric::decode(bytes.as_slice()).unwrap().data else {
+            panic!("prost should decode a gauge");
+        };
+        assert_eq!(prost_gauge.data_points.len(), 1);
+        assert_eq!(prost_gauge.data_points[0].time_unix_nano, 2);
+
+        let metric_view = RawMetric {
+            byte_parser: ProtoBytesParser::new(&bytes),
+        };
+        assert_eq!(gauge_times(&metric_view), vec![2]);
+    }
+
+    /// Scenario: The Metric encodes gauge, then sum.
+    /// Guarantees: Like prost and the byte-backed item counter, the last oneof variant wins.
+    #[test]
+    fn test_last_oneof_variant_wins() {
+        let bytes = metric_with_data_occurrences(&[
+            gauge_occurrence(&[1]),
+            gauge_occurrence(&[2]),
+            sum_occurrence(&[10]),
+        ]);
+        assert!(matches!(
+            Metric::decode(bytes.as_slice()).unwrap().data,
+            Some(Data::Sum(_))
+        ));
+
+        let metric_view = RawMetric {
+            byte_parser: ProtoBytesParser::new(&bytes),
+        };
+        let data = metric_view.data().expect("data should exist");
+        assert_eq!(data.value_type(), DataType::Sum);
+        let times: Vec<_> = data
+            .as_sum()
+            .expect("data should be a sum")
+            .data_points()
+            .map(|dp| dp.time_unix_nano())
+            .collect();
+        assert_eq!(times, vec![10]);
+    }
+
+    /// Scenario: The data points of repeated gauge occurrences are read more than once,
+    /// through the same gauge view and through fresh `data()` calls, with another oneof
+    /// variant encoded before the final gauge run.
+    /// Guarantees: Every read yields the same data points; earlier iterations do not
+    /// consume or corrupt the state later reads rely on.
+    #[test]
+    fn test_repeated_gauge_data_points_can_be_read_again() {
+        for (occurrences, expected) in [
+            (
+                vec![gauge_occurrence(&[1]), gauge_occurrence(&[2])],
+                vec![1, 2],
+            ),
+            (
+                vec![
+                    gauge_occurrence(&[1]),
+                    sum_occurrence(&[10]),
+                    gauge_occurrence(&[2]),
+                    gauge_occurrence(&[3]),
+                ],
+                vec![2, 3],
+            ),
+        ] {
+            let bytes = metric_with_data_occurrences(&occurrences);
+            let metric_view = RawMetric {
+                byte_parser: ProtoBytesParser::new(&bytes),
+            };
+            assert_eq!(gauge_times(&metric_view), expected);
+
+            let data = metric_view.data().expect("data should exist");
+            let gauge = data.as_gauge().expect("data should be a gauge");
+            for _ in 0..2 {
+                let times: Vec<_> = gauge.data_points().map(|dp| dp.time_unix_nano()).collect();
+                assert_eq!(times, expected);
+            }
+            let _ = metric_view.name();
+            assert_eq!(gauge_times(&metric_view), expected);
+        }
     }
 
     #[test]
