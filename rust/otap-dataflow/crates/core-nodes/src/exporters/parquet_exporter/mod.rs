@@ -661,7 +661,7 @@ mod test {
             };
             let peer = "127.0.0.1:4317".parse().unwrap();
             let pdata = OtapPdata::new_default(payload)
-                .with_peer_addr(peer)
+                .with_metadata(otel_arrow_dfe_engine::testing::context::peer_metadata(peer))
                 .test_subscribe_to(
                     Interests::NACKS | Interests::RETURN_DATA,
                     TestCallData::new_with(7, 0).into(),
@@ -696,7 +696,10 @@ mod test {
                         TestCallData::new_with(7, 0)
                     );
                     assert!(nack.permanent);
-                    assert_eq!(nack.refused.peer_addr(), Some(peer));
+                    assert_eq!(
+                        otel_arrow_dfe_engine::testing::context::peer(nack.refused.metadata()),
+                        Some(peer)
+                    );
                     assert_eq!(nack.refused.signal_type(), SignalType::Logs);
                     let payload = nack.refused.payload_ref();
                     assert_eq!(payload.encoding(), Some(codec.encoding()));

@@ -1482,7 +1482,7 @@ fn malformed_encoded_input_is_recoverable() {
     let peer = "127.0.0.1:4317".parse().unwrap();
     let pdata =
         OtapPdata::new_default(codec.admit(SignalType::Logs, bytes.clone()).unwrap().into())
-            .with_peer_addr(peer)
+            .with_metadata(otel_arrow_dfe_engine::testing::context::peer_metadata(peer))
             .test_subscribe_to(
                 Interests::NACKS | Interests::RETURN_DATA,
                 TestCallData::new_with(7, 0).into(),
@@ -1498,7 +1498,10 @@ fn malformed_encoded_input_is_recoverable() {
             match completion.recv().await.unwrap() {
                 PipelineCompletionMsg::DeliverNack { nack } => {
                     assert!(nack.permanent);
-                    assert_eq!(nack.refused.peer_addr(), Some(peer));
+                    assert_eq!(
+                        otel_arrow_dfe_engine::testing::context::peer(nack.refused.metadata()),
+                        Some(peer)
+                    );
                     let recovered = nack.refused.payload_ref().encoded_bytes().unwrap();
                     assert_eq!(recovered.as_ptr(), pointer);
                     assert_eq!(recovered, &bytes);

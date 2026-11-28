@@ -618,7 +618,7 @@ impl ConfigNodeContextDeclaration for Config {
 mod test {
     use super::*;
     use otel_arrow_dfe_config::context::ContextEntryName;
-    use otel_arrow_dfe_config::context::transport_headers::TransportHeader;
+    use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, TransportHeaders};
     use otel_arrow_dfe_engine::error::Error as EngineError;
     use otel_arrow_dfe_engine::pdata_context::ContextDeclaration;
     use otel_arrow_dfe_engine::{
@@ -628,6 +628,7 @@ mod test {
             PipelineCompletionMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
         },
         testing::{
+            context::{ContextFixture, captured_headers, headers_metadata, peer},
             processor::{TestContext, TestRuntime},
             single_node_test_context, test_node,
         },
@@ -806,6 +807,12 @@ mod test {
         )
     }
 
+    /// Scenario: a subscribed log batch whose records carry three distinct
+    /// partition values is partitioned, and every outbound partition is
+    /// Acked.
+    /// Guarantees: each output carries its partition value as a captured
+    /// header and only its records, and the inbound batch is Acked once all
+    /// outbound partitions are Acked.
     #[test]
     fn test_simple_partitioning() {
         let runtime = TestRuntime::<OtapPdata>::new();
@@ -878,7 +885,7 @@ mod test {
                 for (partition_value, expected_log_records) in expected {
                     let emitted_batch = out.pop_front().unwrap();
                     let (context, payload) = emitted_batch.into_parts();
-                    let headers = context.transport_headers().unwrap();
+                    let headers = captured_headers(context.metadata()).unwrap();
                     let header = headers.find_by_name(header_name).next().unwrap();
                     assert_eq!(
                         header,
@@ -1002,7 +1009,7 @@ mod test {
 
                 let emitted_batch = out.pop_front().unwrap();
                 let (context, payload) = emitted_batch.into_parts();
-                let headers = context.transport_headers().unwrap();
+                let headers = captured_headers(context.metadata()).unwrap();
                 let header = headers.find_by_name(header_name).next().unwrap();
                 assert_eq!(
                     header,
@@ -1236,6 +1243,12 @@ mod test {
             .validate(|_ctx| async move {})
     }
 
+    /// Scenario: inputs carrying a captured header (and, for the multi-
+    /// partition input, a peer address and flow metrics) are partitioned
+    /// into several outputs and into a single output.
+    /// Guarantees: every output keeps the captured header and peer address
+    /// next to the added partition header, and the flow compute counter is
+    /// split in proportion to each output's size.
     #[test]
     fn test_preserves_existing_context_including_headers() {
         let runtime = TestRuntime::<OtapPdata>::new();
@@ -1282,8 +1295,7 @@ mod test {
                     )],
                 }));
 
-                let mut context = Context::default();
-                let mut headers = context.take_transport_headers().unwrap_or_default();
+                let mut headers = TransportHeaders::new();
                 headers.push(TransportHeader::captured(
                     context_name("h1"),
                     "header1",
@@ -1291,9 +1303,12 @@ mod test {
                     ValueKind::Text,
                     "hello world".as_bytes(),
                 ));
-                context.set_transport_headers(headers);
-                context.set_peer_addr("10.0.0.1:5005".parse().unwrap());
-                let mut pdata = OtapPdata::new(context, OtapPayload::from(otap_batch));
+                let metadata = ContextFixture::builder()
+                    .capture(&headers)
+                    .compile_standalone()
+                    .form_captured(&headers, Some("10.0.0.1:5005".parse().unwrap()));
+                let mut pdata = OtapPdata::new(Context::default(), OtapPayload::from(otap_batch))
+                    .with_metadata(metadata);
                 pdata.start_flow_metric();
                 pdata.add_flow_compute(8);
                 ctx.process(Message::PData(pdata))
@@ -1302,10 +1317,13 @@ mod test {
 
                 for mut out in ctx.drain_pdata().await {
                     let flow_counter = out.take_flow_compute();
-                    let (mut context, _) = out.into_parts();
-                    let headers = context.take_transport_headers().unwrap();
+                    let (context, _) = out.into_parts();
+                    let headers = captured_headers(context.metadata()).unwrap();
                     assert!(headers.find_by_name("h1").next().is_some());
-                    assert_eq!(context.peer_addr(), Some("10.0.0.1:5005".parse().unwrap()));
+                    assert_eq!(
+                        peer(context.metadata()),
+                        Some("10.0.0.1:5005".parse().unwrap())
+                    );
 
                     // assert the flow counter is distributed outbound batches in proportion
                     // to their size relative to the input
@@ -1341,8 +1359,7 @@ mod test {
                         )],
                     )],
                 }));
-                let mut context = Context::default();
-                let mut headers = context.take_transport_headers().unwrap_or_default();
+                let mut headers = TransportHeaders::new();
                 headers.push(TransportHeader::captured(
                     context_name("h1"),
                     "header1",
@@ -1350,16 +1367,16 @@ mod test {
                     ValueKind::Text,
                     "hello world".as_bytes(),
                 ));
-                context.set_transport_headers(headers);
-                let pdata = OtapPdata::new(context, OtapPayload::from(otap_batch));
+                let pdata = OtapPdata::new(Context::default(), OtapPayload::from(otap_batch))
+                    .with_metadata(headers_metadata(&headers));
                 ctx.process(Message::PData(pdata))
                     .await
                     .expect("no process error");
                 let out = ctx.drain_pdata().await.into_iter().collect::<Vec<_>>();
                 assert_eq!(out.len(), 1);
                 let out = out.into_iter().next().unwrap();
-                let (mut context, _) = out.into_parts();
-                let headers = context.take_transport_headers().unwrap();
+                let (context, _) = out.into_parts();
+                let headers = captured_headers(context.metadata()).unwrap();
                 assert!(headers.find_by_name("h1").next().is_some());
             })
             .validate(|_ctx| async move {})

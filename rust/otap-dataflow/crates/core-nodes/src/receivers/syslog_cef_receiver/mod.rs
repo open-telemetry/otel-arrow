@@ -1975,7 +1975,7 @@ mod tests {
     #[test]
     fn seal_syslog_batch_preserves_compiled_context() {
         use otel_arrow_dfe_config::engine::OtelDataflowSpec;
-        use otel_arrow_dfe_engine::testing::test_pipeline_ctx;
+        use otel_arrow_dfe_engine::testing::{context, test_pipeline_ctx};
         use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
 
         let (mut pipeline, _) = test_pipeline_ctx();
@@ -2048,18 +2048,11 @@ groups:
 
             assert_syslog_payload(pdata.payload_ref());
             assert_eq!(pdata.payload_ref().known_item_count(), Some(1));
-            assert_eq!(pdata.peer_addr(), peer);
-            let route = pdata
-                .materialized_context()
-                .expect("materialized context")
-                .entry(&"tenant".try_into().expect("composite name"))
-                .expect("tenant composite")
-                .member(&"route".try_into().expect("member name"))
-                .expect("route member")
-                .values()
-                .values();
-            assert_eq!(route.len(), 1);
-            assert_eq!(route[0].as_str(), Some("dedicated"));
+            assert_eq!(context::peer(pdata.metadata()), peer);
+            let route = context::materialized_member(pdata.metadata(), "tenant", "route")
+                .expect("route member");
+            assert_eq!(route.values().len(), 1);
+            assert_eq!(route.values()[0].as_str(), Some("dedicated"));
         }
     }
 

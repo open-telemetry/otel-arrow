@@ -13,7 +13,6 @@ use std::sync::Arc;
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 use http::{HeaderMap, HeaderName, HeaderValue};
 use otel_arrow_dfe_config::ContextEntryName;
-use otel_arrow_dfe_config::context::policy::ContextPolicy;
 use otel_arrow_dfe_config::context::transport_headers::{
     TransportHeader, TransportHeaders, ValueKind,
 };
@@ -22,7 +21,10 @@ use otel_arrow_dfe_config::context::transport_policy::{
     HeaderPropagationPolicy as HeaderPropagationConfig, NameStrategy, PropagationDefault,
     PropagationSelector, PropagationSelectorType,
 };
-use otel_arrow_dfe_engine::pdata_context::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
+use otel_arrow_dfe_engine::pdata_context::{
+    Arrival, ArrivalBinding, ArrivalHeaders, Metadata, SinkBinding,
+};
+use otel_arrow_dfe_engine::testing::context::ContextFixture;
 use rdkafka::message::{Header, Headers, OwnedHeaders};
 use tonic::metadata::{KeyAndValueRef, MetadataKey, MetadataMap, MetadataValue};
 
@@ -67,13 +69,13 @@ impl ConsumerCase {
         }
     }
 
-    fn propagation_policy(self) -> Option<HeaderPropagationPolicy> {
+    fn propagation_policy(self) -> Option<HeaderPropagationConfig> {
         let name = match self {
             Self::None => return None,
             Self::Stored => NameStrategy::StoredName,
             Self::Original => NameStrategy::Preserve,
         };
-        let policy = HeaderPropagationConfig::new(
+        Some(HeaderPropagationConfig::new(
             PropagationDefault {
                 selector: PropagationSelector {
                     selector_type: PropagationSelectorType::AllCaptured,
@@ -83,11 +85,7 @@ impl ConsumerCase {
                 ..PropagationDefault::default()
             },
             vec![],
-        );
-        Some(
-            HeaderPropagationPolicy::compile_standalone(policy, &ContextPolicy::default())
-                .expect("propagation policy compiles"),
-        )
+        ))
     }
 
     const fn preserves_original_names(self) -> bool {
@@ -325,29 +323,40 @@ fn bench_receive(c: &mut Criterion) {
 }
 
 fn bench_end_to_end(c: &mut Criterion) {
-    let mut group = c.benchmark_group("request_context/end_to_end_grpc");
+    let mut group = c.benchmark_group("request_context/end_to_end_grpc_bindings");
     for header_count in HEADER_COUNTS {
         for producer in PRODUCER_CASES {
             for consumer in CONSUMER_CASES {
-                let propagation = consumer.propagation_policy();
-                let preserve_original_names = consumer.preserves_original_names();
-                let capture =
-                    capture_policy(header_count, producer).compile(|_| preserve_original_names);
+                let mut builder = ContextFixture::builder()
+                    .header_capture(&capture_policy(header_count, producer));
+                if let Some(propagation) = consumer.propagation_policy() {
+                    builder = builder.sink(
+                        "out",
+                        serde_json::to_value(&propagation)
+                            .expect("serializable propagation policy"),
+                    );
+                }
+                let fixture = builder.compile_standalone();
+                let arrival = fixture.arrival();
+                let sink = consumer.propagation_policy().map(|_| {
+                    fixture
+                        .node_bindings("out")
+                        .sink()
+                        .cloned()
+                        .expect("sink binding")
+                });
                 let metadata = inbound_metadata(header_count);
                 let _ = group.bench_with_input(
                     BenchmarkId::new(case_name(producer, consumer), header_count),
                     &header_count,
                     |b, _| {
                         b.iter(|| {
-                            let context =
-                                receive_metadata(black_box(&capture), black_box(&metadata));
+                            let context = form_metadata(black_box(&arrival), black_box(&metadata));
                             let hop1 = context.clone();
                             let hop2 = hop1.clone();
-                            if let Some(propagation) = &propagation {
-                                let _ = black_box(propagate_metadata(
-                                    black_box(&hop2),
-                                    black_box(propagation),
-                                ));
+                            if let Some(sink) = &sink {
+                                let _ =
+                                    black_box(propagate_bound(black_box(&hop2), black_box(sink)));
                             } else {
                                 let _ = black_box(hop2);
                             }
@@ -630,11 +639,32 @@ fn capture_kafka_headers<T>(
     Arc::new(captured)
 }
 
-fn propagate_metadata(context: &TransportHeaders, policy: &HeaderPropagationPolicy) -> MetadataMap {
+/// Forms context from gRPC metadata through a compiled arrival binding.
+fn form_metadata(arrival: &ArrivalBinding, metadata: &MetadataMap) -> Metadata {
+    let mut pairs = metadata.iter().filter_map(|entry| match entry {
+        KeyAndValueRef::Ascii(key, value) => Some((key.as_str(), Cow::Borrowed(value.as_bytes()))),
+        KeyAndValueRef::Binary(key, value) => value
+            .to_bytes()
+            .ok()
+            .map(|decoded| (key.as_str(), Cow::Owned(decoded.to_vec()))),
+    });
+    arrival
+        .form(Arrival {
+            headers: ArrivalHeaders::Iter(&mut pairs),
+            identity: None,
+            peer: None,
+        })
+        .expect("arrival forms context")
+        .0
+}
+
+/// Propagates context to gRPC metadata through a compiled sink binding.
+fn propagate_bound(context: &Metadata, sink: &SinkBinding) -> MetadataMap {
     let mut metadata = MetadataMap::new();
-    for header in policy.propagate(context) {
-        append_text_metadata(&mut metadata, header.header_name, header.value);
-    }
+    sink.propagate(context, |value| {
+        append_text_metadata(&mut metadata, value.wire_name, value.bytes);
+    })
+    .expect("context matches the sink");
     metadata
 }
 

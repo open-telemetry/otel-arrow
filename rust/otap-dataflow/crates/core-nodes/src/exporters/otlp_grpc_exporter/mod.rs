@@ -1515,7 +1515,6 @@ mod tests {
 
     use http::header;
     use otel_arrow_dfe_config::ContextEntryName;
-    use otel_arrow_dfe_config::context::policy::ContextPolicy;
     use otel_arrow_dfe_config::node::NodeUserConfig;
     use otel_arrow_dfe_config::tls::{TlsClientConfig, TlsConfig};
     use otel_arrow_dfe_otap::http_client_auth::test_support::MockHttpClientAuthProvider;
@@ -1532,7 +1531,7 @@ mod tests {
     };
     use otel_arrow_dfe_engine::Interests;
     use otel_arrow_dfe_engine::context::ControllerContext;
-    use otel_arrow_dfe_engine::pdata_context::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
+    use otel_arrow_dfe_engine::testing::context::{ContextFixture, headers_metadata};
     use otel_arrow_dfe_engine::control::PipelineCompletionMsg;
     use otel_arrow_dfe_engine::control::{
         Controllable, PipelineCompletionMsgSender, RuntimeCtrlMsgSender,
@@ -2650,10 +2649,11 @@ mod tests {
             node_config,
             test_runtime.config(),
         );
-        let exporter = otel_arrow_dfe_engine::testing::exporter::with_propagation_policy(
+        let exporter = otel_arrow_dfe_engine::testing::exporter::with_node_bindings(
             exporter,
-            Some(generated_member_policy()),
+            generated_member_fixture().node_bindings(EXPORTER_NODE),
         );
+        let stale_metadata = generated_member_fixture_with_route("stale-route").form_empty();
 
         let req = ExportLogsServiceRequest {
             resource_logs: vec![Default::default()],
@@ -2667,10 +2667,7 @@ mod tests {
             .set_exporter(exporter)
             .run_test(move |ctx| {
                 Box::pin(async move {
-                    let mut context = context_without_headers();
-                    context.materialize_context(
-                        generated_member_policy_with_route("stale-route").materialization_plan(),
-                    );
+                    let context = context_without_headers().with_metadata(stale_metadata);
                     let logs_pdata = OtapPdata::new(
                         context,
                         OtlpProtoBytes::ExportLogsRequest(sent_bytes).into(),
@@ -3744,37 +3741,56 @@ mod tests {
             .expect("context matches the propagation binding")
     }
 
-    /// Helper: Creates an [`EffectHandler`] with an optional propagation policy set.
-    fn make_effect_handler_with_policy(
-        policy: Option<HeaderPropagationPolicy>,
-    ) -> EffectHandler<OtapPdata> {
+    /// Exporter node id in propagation fixtures.
+    const EXPORTER_NODE: &str = "exporter";
+
+    /// Helper: Creates an [`EffectHandler`] without a propagation binding.
+    fn make_effect_handler() -> EffectHandler<OtapPdata> {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let node_id = test_node("test-exporter");
-        let mut handler = EffectHandler::new(
+        EffectHandler::new(
             node_id,
             metrics_reporter,
             otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-        );
-        handler.set_propagation_policy(policy);
-        handler
+        )
+    }
+
+    /// Helper: Creates an [`EffectHandler`] bound to the exporter node of `fixture`.
+    fn make_effect_handler_for(fixture: &ContextFixture) -> EffectHandler<OtapPdata> {
+        otel_arrow_dfe_engine::testing::exporter::with_local_handler_bindings(
+            make_effect_handler(),
+            fixture.node_bindings(EXPORTER_NODE),
+        )
+    }
+
+    /// Helper: Compiles a fixture that captures `headers` at arrival, declares
+    /// the optional pipeline `context` policy, and adds an exporter node that
+    /// propagates with `propagation`.
+    fn propagation_fixture(
+        propagation: &HeaderPropagationConfig,
+        context_policy: Option<serde_json::Value>,
+        headers: &TransportHeaders,
+    ) -> ContextFixture {
+        let mut builder = ContextFixture::builder().capture(headers);
+        if let Some(context_policy) = context_policy {
+            builder = builder.policy("context", context_policy);
+        }
+        builder
+            .sink(
+                EXPORTER_NODE,
+                serde_json::to_value(propagation).expect("serializable propagation policy"),
+            )
+            .compile_standalone()
+    }
+
+    /// Helper: Creates a [`Context`] formed by `fixture` from `headers`.
+    fn formed_context(fixture: &ContextFixture, headers: &TransportHeaders) -> Context {
+        Context::default().with_metadata(fixture.form_captured(headers, None))
     }
 
     /// Helper: Creates a [`Context`] that carries the given transport headers.
-    fn context_with_headers(headers: TransportHeaders) -> Context {
-        let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into())
-            .with_transport_headers(headers);
-        let (context, _) = pdata.into_parts();
-        context
-    }
-
-    /// Helper: Creates a [`Context`] and materializes the propagation policy's composites.
-    fn materialized_context_with_headers(
-        headers: TransportHeaders,
-        policy: &HeaderPropagationPolicy,
-    ) -> Context {
-        let mut context = context_with_headers(headers);
-        context.materialize_context(policy.materialization_plan());
-        context
+    fn context_with_headers(headers: &TransportHeaders) -> Context {
+        Context::default().with_metadata(headers_metadata(headers))
     }
 
     /// Helper: Creates a [`Context`] without any transport headers.
@@ -3785,8 +3801,8 @@ mod tests {
     }
 
     /// Helper: Propagation policy that propagates all captured headers.
-    fn propagate_all_policy() -> HeaderPropagationPolicy {
-        let policy = HeaderPropagationConfig::new(
+    fn propagate_all_policy() -> HeaderPropagationConfig {
+        HeaderPropagationConfig::new(
             PropagationDefault {
                 selector: PropagationSelector {
                     selector_type: PropagationSelectorType::AllCaptured,
@@ -3795,13 +3811,18 @@ mod tests {
                 ..PropagationDefault::default()
             },
             vec![],
-        );
-        HeaderPropagationPolicy::compile_standalone(policy, &ContextPolicy::default())
-            .expect("propagation policy compiles")
+        )
     }
 
-    fn conditional_workspace_policy() -> HeaderPropagationPolicy {
-        let context: ContextPolicy = serde_json::from_value(serde_json::json!({
+    /// Helper: Fixture that captures `headers` and propagates all of them.
+    fn propagate_all_fixture(headers: &TransportHeaders) -> ContextFixture {
+        propagation_fixture(&propagate_all_policy(), None, headers)
+    }
+
+    /// Helper: Fixture whose `tenant` composite stores `workspace` only in
+    /// production and whose exporter propagates it under its original name.
+    fn conditional_workspace_fixture(headers: &TransportHeaders) -> ContextFixture {
+        let context = serde_json::json!({
             "entries": {
                 "tenant": [
                     {
@@ -3816,8 +3837,7 @@ mod tests {
                     }
                 ]
             }
-        }))
-        .expect("valid conditional context policy");
+        });
         let policy: HeaderPropagationConfig = serde_json::from_value(serde_json::json!({
             "default": {
                 "selector": {
@@ -3828,16 +3848,18 @@ mod tests {
             }
         }))
         .expect("valid conditional propagation policy");
-        HeaderPropagationPolicy::compile_standalone(policy, &context)
-            .expect("conditional propagation policy compiles")
+        propagation_fixture(&policy, Some(context), headers)
     }
 
-    fn generated_member_policy() -> HeaderPropagationPolicy {
-        generated_member_policy_with_route("otlp-grpc")
+    /// Helper: Fixture whose exporter propagates generated `outbound` members.
+    fn generated_member_fixture() -> ContextFixture {
+        generated_member_fixture_with_route("otlp-grpc")
     }
 
-    fn generated_member_policy_with_route(route: &str) -> HeaderPropagationPolicy {
-        let context: ContextPolicy = serde_json::from_value(serde_json::json!({
+    /// Helper: Fixture whose `outbound` composite holds the constant `route`
+    /// and a UUID-v7 `correlation`, both propagated by the exporter.
+    fn generated_member_fixture_with_route(route: &str) -> ContextFixture {
+        let context = serde_json::json!({
             "entries": {
                 "outbound": [
                     {
@@ -3852,8 +3874,7 @@ mod tests {
                     }
                 ]
             }
-        }))
-        .expect("valid generated context policy");
+        });
         let policy: HeaderPropagationConfig = serde_json::from_value(serde_json::json!({
             "default": {
                 "selector": {
@@ -3864,25 +3885,29 @@ mod tests {
             }
         }))
         .expect("valid generated propagation policy");
-        HeaderPropagationPolicy::compile_standalone(policy, &context)
-            .expect("generated propagation policy compiles")
+        propagation_fixture(&policy, Some(context), &TransportHeaders::new())
     }
 
+    /// Scenario: the exporter has no propagation binding and the context carries captured headers.
+    /// Guarantees: no outgoing metadata is produced.
     #[test]
     fn test_build_grpc_metadata_returns_none_without_policy() {
-        let handler = make_effect_handler_with_policy(None);
+        let handler = make_effect_handler();
         let mut headers = TransportHeaders::new();
         headers.push(text_header("x-tenant-id", "x-tenant-id", b"acme"));
-        let context = context_with_headers(headers);
+        let context = context_with_headers(&headers);
 
         let result = grpc_metadata(&handler, &context, None, None);
         assert!(result.is_none(), "should return None when no policy is set");
     }
 
+    /// Scenario: the exporter propagates all captured headers and the context captured none.
+    /// Guarantees: no outgoing metadata is produced.
     #[test]
     fn test_build_grpc_metadata_returns_none_without_headers() {
-        let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
-        let context = context_without_headers();
+        let fixture = propagate_all_fixture(&TransportHeaders::new());
+        let handler = make_effect_handler_for(&fixture);
+        let context = Context::default().with_metadata(fixture.form_empty());
 
         let result = grpc_metadata(&handler, &context, None, None);
         assert!(
@@ -3891,14 +3916,16 @@ mod tests {
         );
     }
 
+    /// Scenario: the exporter propagates all captured headers and the context captured two text headers.
+    /// Guarantees: both header values are emitted as text metadata under their names.
     #[test]
     fn test_build_grpc_metadata_propagates_text_headers() {
-        let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
-
         let mut headers = TransportHeaders::new();
         headers.push(text_header("x-tenant-id", "X-Tenant-Id", b"tenant-abc-123"));
         headers.push(text_header("x-request-id", "X-Request-Id", b"req-xyz-789"));
-        let context = context_with_headers(headers);
+        let fixture = propagate_all_fixture(&headers);
+        let handler = make_effect_handler_for(&fixture);
+        let context = formed_context(&fixture, &headers);
 
         let metadata = grpc_metadata(&handler, &context, None, None)
             .expect("should produce metadata for text headers");
@@ -3918,19 +3945,19 @@ mod tests {
     /// Guarantees: failed conditions omit the header, while a match emits the original name and value.
     #[test]
     fn build_grpc_metadata_applies_conditional_composite_propagation() {
-        let policy = conditional_workspace_policy();
-        let handler = make_effect_handler_with_policy(Some(policy.clone()));
         let mut failing_headers = TransportHeaders::new();
         failing_headers.push(text_header("workspace", "x-workspace-original", b"acme"));
         failing_headers.push(text_header("environment", "environment", b"staging"));
-        let failing_context = materialized_context_with_headers(failing_headers, &policy);
-
-        assert!(grpc_metadata(&handler, &failing_context, None, None).is_none());
-
         let mut matching_headers = TransportHeaders::new();
         matching_headers.push(text_header("workspace", "x-workspace-original", b"acme"));
         matching_headers.push(text_header("environment", "environment", b"production"));
-        let matching_context = materialized_context_with_headers(matching_headers, &policy);
+        let fixture = conditional_workspace_fixture(&matching_headers);
+        let handler = make_effect_handler_for(&fixture);
+        let failing_context = formed_context(&fixture, &failing_headers);
+
+        assert!(grpc_metadata(&handler, &failing_context, None, None).is_none());
+
+        let matching_context = formed_context(&fixture, &matching_headers);
 
         let matching = grpc_metadata(&handler, &matching_context, None, None)
             .expect("matching composite produces metadata");
@@ -3952,11 +3979,9 @@ mod tests {
     /// omitting the composite headers, so the exporter can reject the request.
     #[test]
     fn build_grpc_metadata_rejects_mismatched_context() {
-        let handler = make_effect_handler_with_policy(Some(generated_member_policy()));
-        let mut context = context_without_headers();
-        context.materialize_context(
-            generated_member_policy_with_route("stale-route").materialization_plan(),
-        );
+        let handler = make_effect_handler_for(&generated_member_fixture());
+        let context = Context::default()
+            .with_metadata(generated_member_fixture_with_route("stale-route").form_empty());
 
         assert!(matches!(
             build_grpc_metadata(&handler, &context, None, None),
@@ -3968,10 +3993,9 @@ mod tests {
     /// Guarantees: both materialized values are emitted using their configured member names.
     #[test]
     fn build_grpc_metadata_propagates_generated_members_without_captured_headers() {
-        let policy = generated_member_policy();
-        let handler = make_effect_handler_with_policy(Some(policy.clone()));
-        let mut context = context_without_headers();
-        context.materialize_context(policy.materialization_plan());
+        let fixture = generated_member_fixture();
+        let handler = make_effect_handler_for(&fixture);
+        let context = Context::default().with_metadata(fixture.form_empty());
 
         let metadata = grpc_metadata(&handler, &context, None, None)
             .expect("generated members produce metadata");
@@ -4013,9 +4037,6 @@ mod tests {
                 on_error: None,
             }],
         );
-        let policy = HeaderPropagationPolicy::compile_standalone(policy, &ContextPolicy::default())
-            .expect("propagation policy compiles");
-        let handler = make_effect_handler_with_policy(Some(policy));
 
         let mut headers = TransportHeaders::new();
         headers.push(text_header("x-tenant-id", "X-Tenant-Id", b"acme"));
@@ -4024,7 +4045,9 @@ mod tests {
             "Authorization",
             b"Bearer secret-token",
         ));
-        let context = context_with_headers(headers);
+        let fixture = propagation_fixture(&policy, None, &headers);
+        let handler = make_effect_handler_for(&fixture);
+        let context = formed_context(&fixture, &headers);
 
         let metadata = grpc_metadata(&handler, &context, None, None)
             .expect("should produce metadata (authorization dropped, x-tenant-id remains)");
@@ -4039,10 +4062,10 @@ mod tests {
         );
     }
 
+    /// Scenario: the exporter propagates all captured headers and the context captured a binary `-bin` header.
+    /// Guarantees: the header is emitted as binary metadata with its bytes unchanged.
     #[test]
     fn test_build_grpc_metadata_propagates_binary_headers() {
-        let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
-
         let binary_value: Vec<u8> = vec![0x00, 0x01, 0xFF, 0xFE, 0x80, 0x7F];
         let mut headers = TransportHeaders::new();
         headers.push(binary_header(
@@ -4050,7 +4073,9 @@ mod tests {
             "trace-context-bin",
             binary_value.clone(),
         ));
-        let context = context_with_headers(headers);
+        let fixture = propagate_all_fixture(&headers);
+        let handler = make_effect_handler_for(&fixture);
+        let context = formed_context(&fixture, &headers);
 
         let metadata = grpc_metadata(&handler, &context, None, None)
             .expect("should produce metadata for binary headers");
@@ -4065,10 +4090,10 @@ mod tests {
         );
     }
 
+    /// Scenario: a captured binary header whose wire name lacks the `-bin` suffix is propagated.
+    /// Guarantees: the header is emitted as binary metadata under the name with `-bin` appended.
     #[test]
     fn test_build_grpc_metadata_appends_bin_suffix_for_binary_headers() {
-        let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
-
         let binary_value: Vec<u8> = vec![0xDE, 0xAD, 0xBE, 0xEF];
         let mut headers = TransportHeaders::new();
         // Wire name does NOT end with -bin; build_grpc_metadata should add the suffix.
@@ -4077,7 +4102,9 @@ mod tests {
             "custom-binary",
             binary_value.clone(),
         ));
-        let context = context_with_headers(headers);
+        let fixture = propagate_all_fixture(&headers);
+        let handler = make_effect_handler_for(&fixture);
+        let context = formed_context(&fixture, &headers);
 
         let metadata = grpc_metadata(&handler, &context, None, None)
             .expect("should produce metadata for binary header without -bin suffix");
@@ -4088,10 +4115,10 @@ mod tests {
         assert_eq!(bin_val.to_bytes().unwrap(), binary_value.as_slice());
     }
 
+    /// Scenario: the context captured three values for the same header and all are propagated.
+    /// Guarantees: every value is emitted under that name in capture order.
     #[test]
     fn test_build_grpc_metadata_preserves_duplicate_headers() {
-        let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
-
         let mut headers = TransportHeaders::new();
         headers.push(text_header(
             "x-forwarded-for",
@@ -4108,7 +4135,9 @@ mod tests {
             "X-Forwarded-For",
             b"172.16.0.1",
         ));
-        let context = context_with_headers(headers);
+        let fixture = propagate_all_fixture(&headers);
+        let handler = make_effect_handler_for(&fixture);
+        let context = formed_context(&fixture, &headers);
 
         let metadata = grpc_metadata(&handler, &context, None, None)
             .expect("should produce metadata with duplicate headers");
@@ -4140,13 +4169,12 @@ mod tests {
             },
             vec![],
         );
-        let policy = HeaderPropagationPolicy::compile_standalone(policy, &ContextPolicy::default())
-            .expect("propagation policy compiles");
-        let handler = make_effect_handler_with_policy(Some(policy));
 
         let mut headers = TransportHeaders::new();
         headers.push(text_header("x-tenant-id", "X-Tenant-Id", b"acme"));
-        let context = context_with_headers(headers);
+        let fixture = propagation_fixture(&policy, None, &headers);
+        let handler = make_effect_handler_for(&fixture);
+        let context = formed_context(&fixture, &headers);
 
         let result = grpc_metadata(&handler, &context, None, None);
         assert!(
@@ -4155,11 +4183,13 @@ mod tests {
         );
     }
 
+    /// Scenario: static headers are configured and the exporter has no propagation binding.
+    /// Guarantees: the static headers alone are emitted.
     #[test]
     fn test_build_grpc_metadata_static_only() {
         // No propagation policy, but static headers are configured: the static
         // template alone must be applied to the request.
-        let handler = make_effect_handler_with_policy(None);
+        let handler = make_effect_handler();
         let context = context_without_headers();
 
         let mut headers = HashMap::new();
@@ -4179,14 +4209,16 @@ mod tests {
         );
     }
 
+    /// Scenario: static headers are configured and a distinct captured header is propagated.
+    /// Guarantees: both the static and the propagated header are emitted.
     #[test]
     fn test_build_grpc_metadata_static_and_propagation_coexist() {
         // Static headers and propagated transport headers must both appear.
-        let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
-
         let mut transport = TransportHeaders::new();
         transport.push(text_header("x-tenant-id", "X-Tenant-Id", b"tenant-abc"));
-        let context = context_with_headers(transport);
+        let fixture = propagate_all_fixture(&transport);
+        let handler = make_effect_handler_for(&fixture);
+        let context = formed_context(&fixture, &transport);
 
         let mut static_headers = HashMap::new();
         _ = static_headers.insert("authorization".to_string(), "Basic abc123".into());
@@ -4211,20 +4243,22 @@ mod tests {
         );
     }
 
+    /// Scenario: a propagated captured header has the same name as a static header.
+    /// Guarantees: only the static value is emitted for that name.
     #[test]
     fn test_build_grpc_metadata_static_wins_over_propagated_collision() {
         // When a propagated header collides with a statically configured one,
         // the static value must win and the propagated duplicate must be dropped
         // so we never send two `authorization` values on the wire.
-        let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
-
         let mut transport = TransportHeaders::new();
         transport.push(text_header(
             "authorization",
             "Authorization",
             b"Bearer propagated",
         ));
-        let context = context_with_headers(transport);
+        let fixture = propagate_all_fixture(&transport);
+        let handler = make_effect_handler_for(&fixture);
+        let context = formed_context(&fixture, &transport);
 
         let mut static_headers = HashMap::new();
         _ = static_headers.insert("authorization".to_string(), "Basic static".into());
@@ -4257,7 +4291,7 @@ mod tests {
     /// the credential and send an unauthenticated request.
     #[test]
     fn build_grpc_metadata_carries_the_bearer_token_alone() {
-        let handler = make_effect_handler_with_policy(None);
+        let handler = make_effect_handler();
         let context = context_without_headers();
 
         let metadata = grpc_metadata(
@@ -4285,15 +4319,15 @@ mod tests {
     /// duplicated alongside the token the provider is actively refreshing.
     #[test]
     fn build_grpc_metadata_bearer_token_replaces_other_authorization_headers() {
-        let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
-
         let mut transport = TransportHeaders::new();
         transport.push(text_header(
             "authorization",
             "Authorization",
             b"Bearer propagated",
         ));
-        let context = context_with_headers(transport);
+        let fixture = propagate_all_fixture(&transport);
+        let handler = make_effect_handler_for(&fixture);
+        let context = formed_context(&fixture, &transport);
 
         let mut static_headers = HashMap::new();
         _ = static_headers.insert("authorization".to_string(), "Basic static".into());
@@ -4335,8 +4369,9 @@ mod tests {
     /// instead of silently indexing it on every request.
     #[test]
     fn build_grpc_metadata_keeps_the_bearer_token_sensitive() {
-        let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
-        let context = context_without_headers();
+        let fixture = propagate_all_fixture(&TransportHeaders::new());
+        let handler = make_effect_handler_for(&fixture);
+        let context = Context::default().with_metadata(fixture.form_empty());
 
         let mut token = HeaderValue::from_static("Bearer refreshed");
         token.set_sensitive(true);

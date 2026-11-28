@@ -36,6 +36,8 @@ use tokio::runtime::LocalRuntime;
 
 pub mod capability;
 #[cfg(any(test, feature = "test-utils"))]
+pub mod context;
+#[cfg(any(test, feature = "test-utils"))]
 pub mod dst;
 pub mod exporter;
 pub mod liveness;
@@ -117,12 +119,31 @@ pub fn install_test_context_bindings<PData: 'static + Clone + std::fmt::Debug>(
     factory: &crate::PipelineFactory<PData>,
     pipeline: PipelineConfig,
 ) -> Result<(), crate::error::Error> {
+    install_bindings_with_context_policy(pipeline_ctx, factory, pipeline, None)
+}
+
+/// Like [`install_test_context_bindings`], but resolves the pipeline with
+/// `context` as its context policy, as the engine resolver does for the
+/// pipeline-level `policies.context`.
+pub(crate) fn install_bindings_with_context_policy<PData: 'static + Clone + std::fmt::Debug>(
+    pipeline_ctx: &mut PipelineContext,
+    factory: &crate::PipelineFactory<PData>,
+    pipeline: PipelineConfig,
+    context: Option<otel_arrow_dfe_config::context::policy::ContextPolicy>,
+) -> Result<(), crate::error::Error> {
+    let mut policies = Policies::resolve(pipeline.policies());
+    if let Some(mut context) = context {
+        for definition in context.entries.values_mut() {
+            definition.0.sort_unstable();
+        }
+        policies.context = context;
+    }
     let resolved = ResolvedOtelDataflowSpec {
         engine: Default::default(),
         pipelines: vec![ResolvedPipelineConfig {
             pipeline_group_id: pipeline_ctx.pipeline_group_id(),
             pipeline_id: pipeline_ctx.pipeline_id(),
-            policies: Policies::resolve(pipeline.policies()),
+            policies,
             codecs: otel_arrow_dfe_config::codecs::CodecsConfig::resolve(pipeline.codecs()),
             pipeline,
             topic_scope: otel_arrow_dfe_config::topic::TopicScope::GLOBAL,

@@ -151,7 +151,9 @@ pub(super) fn run_test(config: serde_json::Value, actions: Vec<Action>) {
                         payload,
                         peer_addr,
                     } => {
-                        let mut pdata = OtapPdata::new_default(payload).with_peer_addr(peer_addr);
+                        let mut pdata = OtapPdata::new_default(payload).with_metadata(
+                            otel_arrow_dfe_engine::testing::context::peer_metadata(peer_addr),
+                        );
                         if !interests.is_empty() {
                             pdata = pdata.test_subscribe_to(
                                 interests,
