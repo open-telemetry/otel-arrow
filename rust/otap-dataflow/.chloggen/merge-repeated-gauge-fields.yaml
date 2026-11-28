@@ -4,4 +4,5 @@ note: Merge repeated gauge fields in the best-effort OTLP decoder so no data poi
 issues: [4904]
 subtext: |
   A Metric repeating its gauge field now merges per protobuf semantics when decoding best-effort,
-  matching the strict decoder: data points of all occurrences are concatenated.
+  matching the strict decoder: data points of consecutive occurrences are concatenated, and the
+  last encoded `data` oneof variant wins. The byte-backed OTLP item counter follows the same rule.

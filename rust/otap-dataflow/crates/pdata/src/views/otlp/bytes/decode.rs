@@ -292,9 +292,8 @@ impl<'a, T> RepeatedFieldProtoBytesParser<'a, T>
 where
     T: FieldRanges,
 {
-    /// Create a new instance of `RepeatedFieldProtoBytesParser` with the same buffer and
-    /// shared parser state as the passed `ProtoByteParser` that will implement iterator for
-    /// the given field
+    /// Create a new instance of `RepeatedFieldProtoBytesParser` with the same buffer and parser
+    /// state as the passed `ProtoByteParser` that will implement iterator for the given field
     #[must_use]
     pub fn from_byte_parser(
         other: &ProtoBytesParser<'a, T>,
@@ -306,25 +305,6 @@ where
             state: other.state.clone(),
             field_num,
             expected_wire_type,
-            next_range: None,
-            values_exhausted: false,
-        }
-    }
-
-    /// Create a new iterator for the same field, sharing this instance's buffer and parser
-    /// state, that restarts from the first occurrence of the field.
-    ///
-    /// Views hand out fresh iterators from shared references, so the returned instance
-    /// begins again at the first occurrence: the seed of `next` prefers the cached first
-    /// field range over the shared parsing position, exactly like a parser created with
-    /// [`RepeatedFieldProtoBytesParser::from_byte_parser`] before any iteration happened.
-    #[must_use]
-    pub fn restart_from_first(&self) -> Self {
-        Self {
-            buf: self.buf,
-            state: Rc::clone(&self.state),
-            field_num: self.field_num,
-            expected_wire_type: self.expected_wire_type,
             next_range: None,
             values_exhausted: false,
         }

@@ -277,6 +277,7 @@ fn count_metrics_data_points(bytes: &[u8]) -> Result<usize, Error> {
                 let mut data_position = 0;
 
                 let mut data_count = 0;
+                let mut data_field = None;
 
                 while let Some((field, wire_type, data_bytes)) =
                     next_field(metrics_bytes, &mut data_position)?
@@ -285,8 +286,13 @@ fn count_metrics_data_points(bytes: &[u8]) -> Result<usize, Error> {
                         continue;
                     }
 
-                    // Reset count for each found `oneof` message (under the `data` field) to keep the last one only
-                    data_count = 0;
+                    // Protobuf merge semantics for the `data` oneof: the last variant wins and
+                    // consecutive occurrences of that variant merge, concatenating their data
+                    // points. Reset the count only when the variant changes.
+                    if data_field != Some(field) {
+                        data_field = Some(field);
+                        data_count = 0;
+                    }
                     let mut data_point_position = 0;
 
                     while let Some((field, wire_type, _data_point_bytes)) =
@@ -716,6 +722,90 @@ mod test {
                 .unwrap();
             let parsed_bytes = OtlpProtoBytes::ExportMetricsRequest(proto.into_bytes());
             assert_eq!(parsed_bytes.num_items(), expected_num_items);
+        }
+    }
+
+    /// Scenario: A metric repeats its gauge field, including an empty final occurrence and
+    /// another oneof variant between two gauge occurrences.
+    /// Guarantees: Byte-backed counting matches prost merge semantics: consecutive occurrences
+    /// of the final oneof variant accumulate their data points, while switching to another
+    /// variant discards the points counted so far.
+    #[test]
+    fn repeated_oneof_fields_accumulate_data_points() {
+        use crate::proto::opentelemetry::metrics::v1::{MetricsData, metric::Data};
+
+        fn gauge(values: &[i64]) -> (u64, Vec<u8>) {
+            let gauge = Gauge {
+                data_points: values
+                    .iter()
+                    .map(|value| NumberDataPoint {
+                        value: Some(Value::AsInt(*value)),
+                        ..Default::default()
+                    })
+                    .collect(),
+            };
+            (METRIC_GAUGE, gauge.encode_to_vec())
+        }
+
+        fn sum(values: &[i64]) -> (u64, Vec<u8>) {
+            let sum = Sum {
+                data_points: values
+                    .iter()
+                    .map(|value| NumberDataPoint {
+                        value: Some(Value::AsInt(*value)),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            };
+            (METRIC_SUM, sum.encode_to_vec())
+        }
+
+        let cases = [
+            (vec![gauge(&[1]), gauge(&[2])], 2),
+            (vec![gauge(&[1]), gauge(&[])], 1),
+            (vec![gauge(&[1, 2]), gauge(&[3]), gauge(&[])], 3),
+            (vec![gauge(&[1]), sum(&[10]), gauge(&[2])], 1),
+            (vec![gauge(&[1]), gauge(&[2]), sum(&[10])], 1),
+        ];
+
+        for (occurrences, expected) in cases {
+            let mut proto = ProtoBuffer::default();
+            proto
+                .encode_len_delimited(METRICS_DATA_RESOURCE_METRICS, |proto| {
+                    proto.encode_len_delimited(RESOURCE_METRICS_SCOPE_METRICS, |proto| {
+                        proto.encode_len_delimited(SCOPE_METRICS_METRICS, |proto| {
+                            proto.encode_string(METRIC_NAME, "metric1")?;
+                            for (field_num, bytes) in &occurrences {
+                                proto.encode_len_delimited(*field_num, |proto| {
+                                    proto.extend_from_slice(bytes)
+                                })?;
+                            }
+                            Ok::<(), EncodeFailure>(())
+                        })
+                    })
+                })
+                .unwrap();
+            let bytes = proto.into_bytes();
+
+            // reference: prost merges repeated occurrences of the same oneof variant
+            let prost_count: usize = MetricsData::decode(bytes.as_ref())
+                .unwrap()
+                .resource_metrics
+                .iter()
+                .flat_map(|rm| rm.scope_metrics.iter())
+                .flat_map(|sm| sm.metrics.iter())
+                .map(|metric| match metric.data.as_ref() {
+                    Some(Data::Gauge(gauge)) => gauge.data_points.len(),
+                    Some(Data::Sum(sum)) => sum.data_points.len(),
+                    _ => 0,
+                })
+                .sum();
+            assert_eq!(prost_count, expected);
+            assert_eq!(
+                count_otlp_items(SignalType::Metrics, bytes.as_ref()),
+                expected
+            );
         }
     }
 }
