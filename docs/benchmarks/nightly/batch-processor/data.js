@@ -1,402 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795800917417,
+  "lastUpdate": 1795830479627,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "name": "c1ly",
-            "username": "c1ly",
-            "email": "129437996+c1ly@users.noreply.github.com"
-          },
-          "committer": {
-            "name": "GitHub",
-            "username": "web-flow",
-            "email": "noreply@github.com"
-          },
-          "id": "5abeaf8efbd37b6c8519fc8edcd519281e988bbd",
-          "message": "[otap-dataflow] Kafka Exporter enhancement + integration tests (#3683)\n\n# Change Summary\n\n- Updated to immediately send a permanent nack for unretryable errors\nthat occur when attempting to send data\n- Add live reconfiguration support\n- Updated config to allow control of dynamic topics via allowlist and\nregex\n- Updated config to allow user to directly update config setting for\nautomatic topic creation\n- Added and reorganized test under various scenario types\n  - Security\n  - Shutdown & Live Reconfiguration\n  - Retry expectations\n  - Delivery semantics\n  - Kafka Integration\n  - Telemetry/Observability\n  - Configuration\n  \n## What issue does this PR close?\n\n* Completes part of #3509 \n\n## How are these changes tested?\n\nintegration tests and unit tests\n\n## Are there any user-facing changes?\n\nyes, allow_auto_create_topics is now exposed directly in the Kafka\nExporter config and overwrites any changes set in the producer_config\nhash map (if configured)\n\n### Changelog\n\n* [ x ] Added a `.chloggen/*.yaml` entry\n\n---------\n\nCo-authored-by: Laurent Quérel <l.querel@f5.com>",
-          "timestamp": "2026-08-15T01:02:30Z",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/5abeaf8efbd37b6c8519fc8edcd519281e988bbd"
-        },
-        "date": 1786931846274,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": 1.6581333875656128,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 64.93265201957253,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 65.68692845615922,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 17.458203125,
-            "unit": "MiB",
-            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 18.0859375,
-            "unit": "MiB",
-            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 99997.00342313075,
-            "unit": "logs/sec",
-            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 98338.91977703734,
-            "unit": "logs/sec",
-            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.001798,
-            "unit": "seconds",
-            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 2758388.94834218,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 2897772.0983523685,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 28.049819487505477,
-            "unit": "bytes/log",
-            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_signals_percentage",
-            "value": 1.5741852521896362,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - Dropped Spans %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 67.21237005583319,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 67.72828767651825,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 18.298567708333334,
-            "unit": "MiB",
-            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 19.30078125,
-            "unit": "MiB",
-            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "spans_produced_rate",
-            "value": 99908.73131934032,
-            "unit": "spans/sec",
-            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - Span Throughput"
-          },
-          {
-            "name": "spans_received_rate",
-            "value": 98335.98277443023,
-            "unit": "spans/sec",
-            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - Span Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.001963,
-            "unit": "seconds",
-            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 14640321.1670129,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 14560360.453045586,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - Network Utilization"
-          },
-          {
-            "name": "dropped_signals_percentage",
-            "value": 1.6775593757629395,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - Dropped Metrics %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 37.29873287075424,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 38.98553822393823,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 29.843489583333334,
-            "unit": "MiB",
-            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 30.75,
-            "unit": "MiB",
-            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "metrics_produced_rate",
-            "value": 98321.97550646274,
-            "unit": "metrics/sec",
-            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - Metric Throughput"
-          },
-          {
-            "name": "metrics_received_rate",
-            "value": 96672.56604074618,
-            "unit": "metrics/sec",
-            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - Metric Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.006931,
-            "unit": "seconds",
-            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 1155229.7709031662,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 1657021.7561029322,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - Network Utilization"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 1.6775593757629395,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 32.078864457611985,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 33.02331182795699,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 28.652734375,
-            "unit": "MiB",
-            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 29.6640625,
-            "unit": "MiB",
-            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 98325.37389431658,
-            "unit": "logs/sec",
-            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 96675.90741862779,
-            "unit": "logs/sec",
-            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.004857,
-            "unit": "seconds",
-            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 770844.9744890113,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 1153672.5093272184,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 7.9734961385061975,
-            "unit": "bytes/log",
-            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_signals_percentage",
-            "value": 1.692266583442688,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - Dropped Metrics %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 65.04176470567154,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 65.84096518865749,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 16.879427083333333,
-            "unit": "MiB",
-            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 17.59375,
-            "unit": "MiB",
-            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "metrics_produced_rate",
-            "value": 99996.88009734097,
-            "unit": "metrics/sec",
-            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - Metric Throughput"
-          },
-          {
-            "name": "metrics_received_rate",
-            "value": 98304.66622774703,
-            "unit": "metrics/sec",
-            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - Metric Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.001872,
-            "unit": "seconds",
-            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 4445323.704279045,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 4481136.473211644,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - Network Utilization"
-          },
-          {
-            "name": "dropped_signals_percentage",
-            "value": 0.008677965961396694,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - Dropped Spans %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 46.26712499009883,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 47.89497562862669,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 43.869140625,
-            "unit": "MiB",
-            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 45.9765625,
-            "unit": "MiB",
-            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "spans_produced_rate",
-            "value": 98322.09184083286,
-            "unit": "spans/sec",
-            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - Span Throughput"
-          },
-          {
-            "name": "spans_received_rate",
-            "value": 98313.55948303244,
-            "unit": "spans/sec",
-            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - Span Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.00686,
-            "unit": "seconds",
-            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 4374308.448922295,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 5095551.746067888,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -39400,6 +39006,400 @@ window.BENCHMARK_DATA = {
             "value": 1605034.4376434183,
             "unit": "bytes/sec",
             "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "renovate[bot]",
+            "username": "renovate[bot]",
+            "email": "29139614+renovate[bot]@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "04c87cad179a51c4d3228576aed0165265851d9f",
+          "message": "chore(deps): update rust patches and stable minors (#4842)\n\nThis PR contains the following updates:\n\n| Package | Type | Update | Change |\n|---|---|---|---|\n| [ahash](https://redirect.github.com/tkaitchuck/ahash) |\nworkspace.dependencies | patch | `0.8.12` → `0.8.14` |\n| [aws-config](https://redirect.github.com/smithy-lang/smithy-rs) |\nworkspace.dependencies | patch | `1.13.3` → `1.13.4` |\n|\n[aws-msk-iam-sasl-signer](https://redirect.github.com/yuhao-su/aws-msk-iam-sasl-signer-rs)\n| workspace.dependencies | patch | `1.0.1` → `1.0.2` |\n| [blake3](https://redirect.github.com/BLAKE3-team/BLAKE3) |\nworkspace.dependencies | patch | `1.8.7` → `1.8.8` |\n| [clap](https://redirect.github.com/clap-rs/clap) |\nworkspace.dependencies | patch | `4.6.9` → `4.6.10` |\n| [crc32fast](https://redirect.github.com/srijs/rust-crc32fast) |\nworkspace.dependencies | patch | `1.5.5` → `1.5.6` |\n| [hyper](https://hyper.rs)\n([source](https://redirect.github.com/hyperium/hyper)) |\nworkspace.dependencies | minor | `1.12.0` → `1.13.0` |\n| [pest](https://pest.rs/)\n([source](https://redirect.github.com/pest-parser/pest)) |\nworkspace.dependencies | patch | `2.9.6` → `2.9.7` |\n| [pest_derive](https://pest.rs/)\n([source](https://redirect.github.com/pest-parser/pest)) |\nworkspace.dependencies | patch | `2.9.6` → `2.9.7` |\n| [regex](https://redirect.github.com/rust-lang/regex) |\nworkspace.dependencies | patch | `1.13.1` → `1.13.2` |\n| [sha2](https://redirect.github.com/RustCrypto/hashes) |\nworkspace.dependencies | patch | `0.11.1` → `0.11.2` |\n| [toml](https://redirect.github.com/toml-rs/toml) |\nworkspace.dependencies | patch | `1.2.2+spec-1.1.0` → `1.2.3` |\n| [zstd](https://redirect.github.com/gyscos/zstd-rs) |\nworkspace.dependencies | patch | `0.14.4` → `0.14.5` |\n\n---\n\n### Release Notes\n\n<details>\n<summary>tkaitchuck/ahash (ahash)</summary>\n\n###\n[`v0.8.14`](https://redirect.github.com/tkaitchuck/aHash/releases/tag/v0.8.14)\n\n[Compare\nSource](https://redirect.github.com/tkaitchuck/ahash/compare/v0.8.13...v0.8.14)\n\n#### What's Changed\n\n- Fix some typos by\n[@&#8203;BaldDemian](https://redirect.github.com/BaldDemian) in\n[tkaitchuck/aHash#275](https://redirect.github.com/tkaitchuck/aHash/pull/275)\n- docs: fix typos by [@&#8203;dciug](https://redirect.github.com/dciug)\nin\n[tkaitchuck/aHash#280](https://redirect.github.com/tkaitchuck/aHash/pull/280)\n- Avoid \\[u64; 4] -> \\[u128; 2] conversion. by\n[@&#8203;briansmith](https://redirect.github.com/briansmith) in\n[tkaitchuck/aHash#266](https://redirect.github.com/tkaitchuck/aHash/pull/266)\n- feat: Update getrandom to 0.4 by\n[@&#8203;Marwes](https://redirect.github.com/Marwes) in\n[tkaitchuck/aHash#287](https://redirect.github.com/tkaitchuck/aHash/pull/287)\n- Update hashbrown benchmark link by\n[@&#8203;TheIronBorn](https://redirect.github.com/TheIronBorn) in\n[tkaitchuck/aHash#262](https://redirect.github.com/tkaitchuck/aHash/pull/262)\n- Add serialization to RandomState struct by\n[@&#8203;alexeysofin](https://redirect.github.com/alexeysofin) in\n[tkaitchuck/aHash#284](https://redirect.github.com/tkaitchuck/aHash/pull/284)\n- Fix typo in comment about Knuth's PRNG constant by\n[@&#8203;PallHaraldsson](https://redirect.github.com/PallHaraldsson) in\n[tkaitchuck/aHash#293](https://redirect.github.com/tkaitchuck/aHash/pull/293)\n- Make serde compatible with no_std feature in Cargo.toml by\n[@&#8203;Masterchef365](https://redirect.github.com/Masterchef365) in\n[tkaitchuck/aHash#289](https://redirect.github.com/tkaitchuck/aHash/pull/289)\n- Allow but don't require getrandom 0.4 by\n[@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#294](https://redirect.github.com/tkaitchuck/aHash/pull/294)\n- Bump Rust version we test with by\n[@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#296](https://redirect.github.com/tkaitchuck/aHash/pull/296)\n- Fix the quality issues raised in\n[#&#8203;292](https://redirect.github.com/tkaitchuck/ahash/issues/292).\nby [@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#295](https://redirect.github.com/tkaitchuck/aHash/pull/295)\n- Update Cargo.toml for getrandom on wasm by\n[@&#8203;Its-Just-Nans](https://redirect.github.com/Its-Just-Nans) in\n[tkaitchuck/aHash#290](https://redirect.github.com/tkaitchuck/aHash/pull/290)\n- fix: ensure consistent hashing for specialized owned and reference\ntypes by [@&#8203;agmbk](https://redirect.github.com/agmbk) in\n[tkaitchuck/aHash#286](https://redirect.github.com/tkaitchuck/aHash/pull/286)\n- Strengthen no panic checks by\n[@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#297](https://redirect.github.com/tkaitchuck/aHash/pull/297)\n- Make sure we don't depend on std without the cfg by\n[@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#298](https://redirect.github.com/tkaitchuck/aHash/pull/298)\n- Fix issues on other architectures by\n[@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#302](https://redirect.github.com/tkaitchuck/aHash/pull/302)\n- Revert reference specializations from\n[#&#8203;286](https://redirect.github.com/tkaitchuck/ahash/issues/286)\n(fixes\n[#&#8203;303](https://redirect.github.com/tkaitchuck/ahash/issues/303))\nby [@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#305](https://redirect.github.com/tkaitchuck/aHash/pull/305)\n- Simplify build flags for aes vs fallback by\n[@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#304](https://redirect.github.com/tkaitchuck/aHash/pull/304)\n- Merge master\n([#&#8203;302](https://redirect.github.com/tkaitchuck/ahash/issues/302),\n[#&#8203;305](https://redirect.github.com/tkaitchuck/ahash/issues/305),\n[#&#8203;304](https://redirect.github.com/tkaitchuck/ahash/issues/304))\ninto 0.8 by [@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck)\nin\n[tkaitchuck/aHash#306](https://redirect.github.com/tkaitchuck/aHash/pull/306)\n- Fix quality issues in finish, and optimize related paths by\n[@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#309](https://redirect.github.com/tkaitchuck/aHash/pull/309)\n- Test with SMHasher3 instead of rurban's SMHasher by\n[@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#308](https://redirect.github.com/tkaitchuck/aHash/pull/308)\n- Override BuildHasher::hash_one on stable as well by\n[@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#310](https://redirect.github.com/tkaitchuck/aHash/pull/310)\n- Merge master into release branch by\n[@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#311](https://redirect.github.com/tkaitchuck/aHash/pull/311)\n\n#### New Contributors\n\n- [@&#8203;BaldDemian](https://redirect.github.com/BaldDemian) made\ntheir first contribution in\n[tkaitchuck/aHash#275](https://redirect.github.com/tkaitchuck/aHash/pull/275)\n- [@&#8203;dciug](https://redirect.github.com/dciug) made their first\ncontribution in\n[tkaitchuck/aHash#280](https://redirect.github.com/tkaitchuck/aHash/pull/280)\n- [@&#8203;Marwes](https://redirect.github.com/Marwes) made their first\ncontribution in\n[tkaitchuck/aHash#287](https://redirect.github.com/tkaitchuck/aHash/pull/287)\n- [@&#8203;TheIronBorn](https://redirect.github.com/TheIronBorn) made\ntheir first contribution in\n[tkaitchuck/aHash#262](https://redirect.github.com/tkaitchuck/aHash/pull/262)\n- [@&#8203;alexeysofin](https://redirect.github.com/alexeysofin) made\ntheir first contribution in\n[tkaitchuck/aHash#284](https://redirect.github.com/tkaitchuck/aHash/pull/284)\n- [@&#8203;PallHaraldsson](https://redirect.github.com/PallHaraldsson)\nmade their first contribution in\n[tkaitchuck/aHash#293](https://redirect.github.com/tkaitchuck/aHash/pull/293)\n- [@&#8203;Masterchef365](https://redirect.github.com/Masterchef365)\nmade their first contribution in\n[tkaitchuck/aHash#289](https://redirect.github.com/tkaitchuck/aHash/pull/289)\n- [@&#8203;Its-Just-Nans](https://redirect.github.com/Its-Just-Nans)\nmade their first contribution in\n[tkaitchuck/aHash#290](https://redirect.github.com/tkaitchuck/aHash/pull/290)\n- [@&#8203;agmbk](https://redirect.github.com/agmbk) made their first\ncontribution in\n[tkaitchuck/aHash#286](https://redirect.github.com/tkaitchuck/aHash/pull/286)\n\n**Full Changelog**:\n<https://github.com/tkaitchuck/aHash/compare/v0.8.13...v0.8.14>\n\n###\n[`v0.8.13`](https://redirect.github.com/tkaitchuck/aHash/releases/tag/v0.8.13)\n\n[Compare\nSource](https://redirect.github.com/tkaitchuck/ahash/compare/v0.8.12...v0.8.13)\n\n#### What's Changed\n\nFixes a number of issues most notably\n[#&#8203;292](https://redirect.github.com/tkaitchuck/ahash/issues/292)\n\n**Full Changelog**:\n<https://github.com/tkaitchuck/aHash/compare/v0.8.12...v0.8.13>\n\n</details>\n\n<details>\n<summary>yuhao-su/aws-msk-iam-sasl-signer-rs\n(aws-msk-iam-sasl-signer)</summary>\n\n###\n[`v1.0.2`](https://redirect.github.com/yuhao-su/aws-msk-iam-sasl-signer-rs/blob/HEAD/CHANGELOG.md#102---2026-11-26)\n\n[Compare\nSource](https://redirect.github.com/yuhao-su/aws-msk-iam-sasl-signer-rs/compare/v1.0.1...v1.0.2)\n\n- Cap the token lifetime at the credentials' expiry, so clients refresh\nthe token before the credentials expire\n([#&#8203;14](https://redirect.github.com/yuhao-su/aws-msk-iam-sasl-signer-rs/issues/14),\n[#&#8203;17](https://redirect.github.com/yuhao-su/aws-msk-iam-sasl-signer-rs/issues/17))\n- Rewrite the examples, README and API docs\n([#&#8203;13](https://redirect.github.com/yuhao-su/aws-msk-iam-sasl-signer-rs/issues/13))\n\n</details>\n\n<details>\n<summary>BLAKE3-team/BLAKE3 (blake3)</summary>\n\n###\n[`v1.8.8`](https://redirect.github.com/BLAKE3-team/BLAKE3/releases/tag/1.8.8)\n\n[Compare\nSource](https://redirect.github.com/BLAKE3-team/BLAKE3/compare/1.8.7...1.8.8)\n\nversion 1.8.8\n\nChanges since 1.8.7:\n\n-\n[#&#8203;582](https://redirect.github.com/BLAKE3-team/BLAKE3/issues/582)\nadds some alignment optimizations to make performance more\n  consistent for short inputs.\n- Soundness fix in `blake3_xof_many_avx512`, which is public but hidden\n  (for benchmarks). Callers using the documented API are unaffected.\n- `Hash::to_hex` and `Hash::from_hex` are more likely to be constant\n  time.\n\n</details>\n\n<details>\n<summary>clap-rs/clap (clap)</summary>\n\n###\n[`v4.6.10`](https://redirect.github.com/clap-rs/clap/blob/HEAD/CHANGELOG.md#4610---2026-11-24)\n\n[Compare\nSource](https://redirect.github.com/clap-rs/clap/compare/v4.6.9...v4.6.10)\n\n##### Performance\n\n- Reduce per-argument parse overhead\n\n</details>\n\n<details>\n<summary>srijs/rust-crc32fast (crc32fast)</summary>\n\n###\n[`v1.5.6`](https://redirect.github.com/srijs/rust-crc32fast/compare/v1.5.5...v1.5.6)\n\n[Compare\nSource](https://redirect.github.com/srijs/rust-crc32fast/compare/v1.5.5...v1.5.6)\n\n</details>\n\n<details>\n<summary>hyperium/hyper (hyper)</summary>\n\n###\n[`v1.13.0`](https://redirect.github.com/hyperium/hyper/blob/HEAD/CHANGELOG.md#v1130-2026-11-23)\n\n[Compare\nSource](https://redirect.github.com/hyperium/hyper/compare/v1.12.0...v1.13.0)\n\n##### Bug Fixes\n\n- **client:** fail parked h2 request with connection error on close\n([#&#8203;4275](https://redirect.github.com/hyperium/hyper/issues/4275))\n([dea9acb5](https://redirect.github.com/hyperium/hyper/commit/dea9acb5344e0e34bb9196f5493464db68edd24a),\ncloses\n[#&#8203;4269](https://redirect.github.com/hyperium/hyper/issues/4269))\n- **http1:**\n- preserve streaming bodies when coercing HTTP/2 requests\n([#&#8203;4236](https://redirect.github.com/hyperium/hyper/issues/4236))\n([21da6a59](https://redirect.github.com/hyperium/hyper/commit/21da6a59db9a90631302e7b173c106b723b9065f))\n- prevent `SendRequest` from reporting ready while a request is pending\n([#&#8203;4247](https://redirect.github.com/hyperium/hyper/issues/4247))\n([47c725c4](https://redirect.github.com/hyperium/hyper/commit/47c725c459ede66e68ad705f7da9a901abbbdc17),\ncloses\n[#&#8203;4246](https://redirect.github.com/hyperium/hyper/issues/4246))\n- avoid adding connection-close to 101 responses\n([#&#8203;4248](https://redirect.github.com/hyperium/hyper/issues/4248))\n([ac3f9501](https://redirect.github.com/hyperium/hyper/commit/ac3f9501de373388fb9914e285134cfec2283bd8),\ncloses\n[#&#8203;4244](https://redirect.github.com/hyperium/hyper/issues/4244))\n- error when final body chunk is shorter than content-length\n([#&#8203;4270](https://redirect.github.com/hyperium/hyper/issues/4270))\n([75062064](https://redirect.github.com/hyperium/hyper/commit/750620646ba0777daa45be3d82bd1704dcf470b8))\n- drop Content-Length when a response also has Transfer-Encoding\n([#&#8203;4264](https://redirect.github.com/hyperium/hyper/issues/4264))\n([378f8479](https://redirect.github.com/hyperium/hyper/commit/378f8479b8b703d098b46de1cec9ea648f12ea69),\ncloses\n[#&#8203;4263](https://redirect.github.com/hyperium/hyper/issues/4263))\n- drain in-flight requests before dispatcher shutdown\n([#&#8203;4222](https://redirect.github.com/hyperium/hyper/issues/4222))\n([97fff93e](https://redirect.github.com/hyperium/hyper/commit/97fff93e53f9e6a993f2d6a25d50883b7b8752a7),\ncloses\n[#&#8203;4202](https://redirect.github.com/hyperium/hyper/issues/4202))\n- **http2:**\n- report zero body size hint for HEAD responses\n([#&#8203;4237](https://redirect.github.com/hyperium/hyper/issues/4237))\n([4e1c0fbb](https://redirect.github.com/hyperium/hyper/commit/4e1c0fbb9db68936c952c481321d96f536568283))\n- prevent requests from hanging during concurrent connection shutdown\nrace\n([#&#8203;4242](https://redirect.github.com/hyperium/hyper/issues/4242))\n([5634b91d](https://redirect.github.com/hyperium/hyper/commit/5634b91d607ba1b781699765b22f16fd6ec1c8b7))\n- strip all headers named in every Connection header\n([#&#8203;4271](https://redirect.github.com/hyperium/hyper/issues/4271))\n([a44e32a7](https://redirect.github.com/hyperium/hyper/commit/a44e32a7f85a1f98e34307ae17985c0bc1349a03))\n- keep connection open after rejecting CONNECT\n([#&#8203;4235](https://redirect.github.com/hyperium/hyper/issues/4235))\n([88520c3e](https://redirect.github.com/hyperium/hyper/commit/88520c3eaea391f8ba49591a84f8439998b76191))\n\n##### Features\n\n- **http2:** add an executor getter for server and client\n([#&#8203;4250](https://redirect.github.com/hyperium/hyper/issues/4250))\n([b638fc0d](https://redirect.github.com/hyperium/hyper/commit/b638fc0de351987f3eaffa2bdabd393c8679a9e8))\n\n</details>\n\n<details>\n<summary>pest-parser/pest (pest)</summary>\n\n###\n[`v2.9.7`](https://redirect.github.com/pest-parser/pest/releases/tag/v2.9.7)\n\n[Compare\nSource](https://redirect.github.com/pest-parser/pest/compare/v2.9.6...v2.9.7)\n\n#### What's Changed\n\n- ci: add gh actions lock by\n[@&#8203;tomtau](https://redirect.github.com/tomtau) in\n[#&#8203;1239](https://redirect.github.com/pest-parser/pest/pull/1239)\n- Reduce per-entry overhead of the stack guard and call-limit check by\n[@&#8203;tomtau](https://redirect.github.com/tomtau) in\n[#&#8203;1241](https://redirect.github.com/pest-parser/pest/pull/1241)\n\n**Full Changelog**:\n<https://github.com/pest-parser/pest/compare/v2.9.6...v2.9.7>\n\n#### Warning: Semantic Versioning\n\nNote that the node tag feature in 2.6.0 was a technically\nsemver-breaking change even though it is a backwards-compatible /\nnon-breaking change in the meta-grammar. There may be similar\nnon-breaking changes to the meta-grammar between minor versions in the\nfuture. These non-breaking changes, however, may translate into\nsemver-breaking changes due to the additional variants propagated from\nthe generated `Rule` enum.\n\nThis new feature caused issues in some Cargo version resolution\nsituations where Cargo mixed different versions of pest dependencies.\nFor this reason, these \"grammar non-breaking but semver-breaking\"\nchanges are now available only under the \"grammar-extras\" feature flag.\nIf you would like to use node tags (or other future grammar features),\nyou can do so by enabling this flag on the pest_derive crate in your\nCargo.toml:\n\n```\n...\npest_derive = { version = \"2.9\", features = [\"grammar-extras\"] }\n```\n\npest 2.9.3 and 2.9.4 required a `stacker` dependency which relies on a C\ncompiler toolchain; this was made optional for non-native targets and\ncan be opt-in enabled with the feature flag in those targets (see\n[native stack\nguard](https://redirect.github.com/pest-parser/pest#native-stack-guard)\nnotes in README):\n\n```\n...\npest = { version = \"2.9.5\", features = [\"stack-guard\"] }\n```\n\n</details>\n\n<details>\n<summary>rust-lang/regex (regex)</summary>\n\n###\n[`v1.13.2`](https://redirect.github.com/rust-lang/regex/blob/HEAD/CHANGELOG.md#1132-2026-11-17)\n\n[Compare\nSource](https://redirect.github.com/rust-lang/regex/compare/1.13.1...1.13.2)\n\n\\===================\nBug fixes:\n\n-\n[#&#8203;1333](https://redirect.github.com/rust-lang/regex/issues/1333):\n  Fix a glob syntax error in `package.include`.\n-\n[#&#8203;1388](https://redirect.github.com/rust-lang/regex/issues/1388),\n[#&#8203;1344](https://redirect.github.com/rust-lang/regex/issues/1344):\n  Panic in `BoundedBacktracker` when haystack length exceeds capacity.\n-\n[#&#8203;1389](https://redirect.github.com/rust-lang/regex/issues/1389):\n  Revert default pool capacity change.\n-\n[#&#8203;1394](https://redirect.github.com/rust-lang/regex/issues/1394),\n[#&#8203;1392](https://redirect.github.com/rust-lang/regex/issues/1392):\n  Allow Parser to be reused in `regex-syntax`.\n-\n[#&#8203;1395](https://redirect.github.com/rust-lang/regex/issues/1395),\n[#&#8203;1393](https://redirect.github.com/rust-lang/regex/issues/1393):\n  Make Position's Ord match Eq in `regex-syntax`.\n-\n[#&#8203;1400](https://redirect.github.com/rust-lang/regex/issues/1400):\nFix incorrect match offsets for alternations whose branches start with\nthe\n  same repetition.\n-\n[#&#8203;1415](https://redirect.github.com/rust-lang/regex/issues/1415):\n  Avoid PikeVM panic with excess capture slots.\n-\n[#&#8203;1417](https://redirect.github.com/rust-lang/regex/issues/1417):\n  The `Pattern` trait now requires `unsafe`.\n-\n[#&#8203;1419](https://redirect.github.com/rust-lang/regex/issues/1419):\n  Read the high half of a serialized `ByteSet` from the right offset.\n-\n[a1e367b](https://redirect.github.com/rust-lang/regex/commit/a1e367bbb6a51aaad2d0b23a74608c09a3a50b87):\n  Fix a bug when `WhichCaptures::None` is used.\n-\n[#&#8203;1406](https://redirect.github.com/rust-lang/regex/issues/1406):\n  Fix off-by-one error.\n\nEnhancements:\n\n-\n[80b9d14](https://redirect.github.com/rust-lang/regex/commit/80b9d14e4be9f0b703a742d11c064abce05f210b):\n  Add is_match_with to `regex-automata::meta::Regex`.\n\nPerformance:\n\n-\n[#&#8203;1352](https://redirect.github.com/rust-lang/regex/issues/1352):\n  Do codepoint range canonicalization in-place.\n\nDocumentation:\n\n-\n[#&#8203;1380](https://redirect.github.com/rust-lang/regex/issues/1380):\n  Document overflow for `Span::offset`.\n\n</details>\n\n<details>\n<summary>RustCrypto/hashes (sha2)</summary>\n\n###\n[`v0.11.2`](https://redirect.github.com/RustCrypto/hashes/compare/sha2-v0.11.1...sha2-v0.11.2)\n\n[Compare\nSource](https://redirect.github.com/RustCrypto/hashes/compare/sha2-v0.11.1...sha2-v0.11.2)\n\n</details>\n\n<details>\n<summary>toml-rs/toml (toml)</summary>\n\n###\n[`v1.2.3`](https://redirect.github.com/toml-rs/toml/compare/toml-v1.2.2...toml-v1.2.3)\n\n[Compare\nSource](https://redirect.github.com/toml-rs/toml/compare/toml-v1.2.2...toml-v1.2.3)\n\n</details>\n\n<details>\n<summary>gyscos/zstd-rs (zstd)</summary>\n\n###\n[`v0.14.5`](https://redirect.github.com/gyscos/zstd-rs/releases/tag/v0.14.5):\nzstd 0.14.5\n\n[Compare\nSource](https://redirect.github.com/gyscos/zstd-rs/compare/v0.14.4...v0.14.5)\n\n### zstd 0.14.5, zstd-safe 8.4.0, zstd-sys 2.2.0\n\nThis release bundles zstd 1.6.0, which fixes\n[CVE-2026-124851](https://www.cve.org/CVERecord?id=CVE-2026-124851) and\na\nbatch of memory-safety bugs ([upstream release\nnotes](https://redirect.github.com/facebook/zstd/releases/tag/v1.6.0)).\nUpdating is recommended. It also fixes three soundness issues in\nzstd-safe\n([#&#8203;401](https://redirect.github.com/gyscos/zstd-rs/issues/401),\n[#&#8203;415](https://redirect.github.com/gyscos/zstd-rs/issues/415),\n[#&#8203;416](https://redirect.github.com/gyscos/zstd-rs/issues/416)).\n\nWith `pkg-config`, the system's zstd library is used instead of the\nbundled\none: update it to 1.6.0 to get the upstream fixes.\n\nRust 1.64 remains supported.\n\n#### zstd-sys 2.2.0+zstd.1.6.0\n\n- Bundle zstd 1.6.0\n([#&#8203;420](https://redirect.github.com/gyscos/zstd-rs/issues/420),\nthanks [@&#8203;emschwartz](https://redirect.github.com/emschwartz)). It\nalso fixes the wasm build\n  with zstd 1.6.0.\n- zstd 1.6.0 made these part of its stable API, so they no longer need\nthe\n  `experimental` feature: `ZSTD_getFrameHeader`, `ZSTD_FrameHeader`,\n  `ZSTD_FrameType_e`, `ZSTD_createDDict_byReference`,\n`ZSTD_CCtx_loadDictionary_advanced`,\n`ZSTD_DCtx_loadDictionary_advanced`,\n  `ZSTD_dictContentType_e` and `ZSTD_dictLoadMethod_e`.\n- `experimental`: zstd 1.6.0 removed `ZSTD_copyCCtx` and\n`ZSTD_copyDCtx`, and\n  added `ZSTD_isDeterministicBuild`.\n- zstd 1.6.0 disables legacy format support by default, but the `legacy`\n  feature keeps working as before (on by default).\n\n#### zstd-safe 8.4.0\n\nNew API:\n\n- `get_frame_header()` returns a frame's header (`FrameHeader`, zstd's\nown\n  struct), or how much of the frame it needs (`FrameHeaderStatus`).\n  `get_frame_header_advanced()` takes a `FrameFormat` (`experimental`).\n- `CCtx::load_dictionary_advanced()` and\n`DCtx::load_dictionary_advanced()`\ntake a `DictContentType`. `ref_dictionary()` borrows the dictionary\ninstead\n  of copying it.\n- `DDict::create_by_reference()` no longer needs `experimental`.\n- Worker threads with owned data: `CCtx::set_cdict()`,\n`CCtx::set_prefix()`,\n  `CCtx::compress_with_cdict()`, `CCtx::compress_with_prefix()`,\n  `CDict::create_by_reference_owned()` (`experimental`), and\n  `CCtx::frame_workers()`, which tells how many workers a frame gets.\n\nFixes:\n\n- Leaking a `CCtx` in the middle of a multithreaded frame that reads a\nborrowed dictionary or prefix no longer lets the workers read it after\nthe\nborrow ends\n([#&#8203;401](https://redirect.github.com/gyscos/zstd-rs/issues/401),\n[#&#8203;411](https://redirect.github.com/gyscos/zstd-rs/issues/411)).\n- The block API no longer reads memory that an earlier one-shot call\nonly\nborrowed, or state zstd never set up\n([#&#8203;415](https://redirect.github.com/gyscos/zstd-rs/issues/415),\n[#&#8203;417](https://redirect.github.com/gyscos/zstd-rs/issues/417)).\n- `NoOp` no longer writes through a stale pointer when a `WriteBuf`'s\ncapacity changes between calls\n([#&#8203;416](https://redirect.github.com/gyscos/zstd-rs/issues/416),\n[#&#8203;417](https://redirect.github.com/gyscos/zstd-rs/issues/417)).\n- Worker tracking stays in step with zstd: in `compress2()` when the\n  destination panics, with stale pledged sizes, and with clamped\n`NbWorkers`\n([#&#8203;407](https://redirect.github.com/gyscos/zstd-rs/issues/407)).\n- One-shot calls end their session before the `WriteBuf` runs, so a\npanicking destination no longer leaves the context pointing at borrowed\nbuffers\n([#&#8203;409](https://redirect.github.com/gyscos/zstd-rs/issues/409)).\n\nBehaviour changes:\n\n- With worker threads, a streaming frame that reads borrowed data (a\nprefix\nfrom `ref_prefix()`, a `CDict` made by `create_by_reference()`, a\ndictionary\n  from `ref_dictionary()`) runs on the calling thread, and `JobSize`,\n`OverlapSizeLog` and `RSyncable` have no effect on it. `compress2()` and\n  the owned variants above keep the workers.\n- `NbWorkers` is refused (`parameter_unsupported`) without the `zstdmt`\n  feature, even when the linked zstd library has threads. `zstdmt` now\n  enables `alloc`.\n- `compress_block()` / `decompress_block()` run in block sessions of\ntheir\n  own: any other `&mut self` method ends the session, and a failed block\n  call poisons the context until a reset.\n- `WriteBuf`'s contract now says its capacity and pointer must not\nchange\n  while zstd-safe uses the buffer (they may between uses, as a `Vec`'s\n  does). Every implementation in this crate already did; check your own\n  `unsafe impl WriteBuf`.\n\n#### zstd 0.14.5\n\n- `DecoderDictionary::new()` and `try_new()` no longer need\n`experimental`.\n- `EncoderDictionary` is `Clone`, and `EncoderDictionary::from_cdict()`\nwraps\nany prepared dictionary. Encoders and compressors keep their own handle,\nso\n`with_prepared_dictionary()` only needs the dictionary's bytes to\noutlive\n  them.\n- `write::Encoder::with_prefix()` takes a prefix the encoder owns, and\n`bulk::Compressor::compress_with_prefix()` borrows one for a single\ncall:\n  both keep the worker threads.\n- Out of memory: failing to allocate a compression context now returns\nan\n  `OutOfMemory` error instead of panicking. The decoders report\n  `OutOfMemory` (they said `Other`), and so does zstd's own\n`memory_allocation` error, which no longer carries a `zstd::Error`. None\nof these errors allocate\n([#&#8203;414](https://redirect.github.com/gyscos/zstd-rs/issues/414),\nthanks [@&#8203;gleocadie](https://redirect.github.com/gleocadie), and\n[#&#8203;418](https://redirect.github.com/gyscos/zstd-rs/issues/418)).\n- `write::Encoder` no longer writes a second, empty frame when flushed\nwhile\n  a finish is being retried. Behaviour change: `write()` in that state\nreturns the \"encoder is finished\" error\n([#&#8203;404](https://redirect.github.com/gyscos/zstd-rs/issues/404)).\n- `AutoFinishEncoder` and `AutoFlushDecoder` no longer abort the process\nwhen the writer or callback panics while another panic unwinds\n([#&#8203;404](https://redirect.github.com/gyscos/zstd-rs/issues/404)).\n\n#### Upgrading with the `experimental` feature\n\nzstd-safe up to 8.2 has `CCtx::try_clone()` and `DCtx::try_clone()`\nbehind\n`experimental`, and they call the functions zstd 1.6.0 removed: with\n`experimental`, those versions no longer build against zstd-sys 2.2.0.\nUpdate to zstd-safe 8.4.0 (zstd 0.14.5), or stay on the previous\nzstd-sys\nwith `cargo update -p zstd-sys --precise 2.1.3+zstd.1.5.7`.\n\nThe same applies to the 0.13 line: zstd 0.13 picks up zstd-sys 2.2.0\n(and\nzstd 1.6.0) on `cargo update`, except with `experimental`.\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: (UTC)\n\n- Branch creation\n  - \"before 8am on Friday\"\n- Automerge\n  - At any time (no schedule defined)\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n👻 **Immortal**: This PR will be recreated if closed unmerged. Get\n[config\nhelp](https://redirect.github.com/renovatebot/renovate/discussions) if\nthat's undesired.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0NC4yNDkuMSIsInVwZGF0ZWRJblZlciI6IjQ0LjI2Mi4xIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6WyJkZXBlbmRlbmNpZXMiXX0=-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
+          "timestamp": "2026-11-27T04:26:05Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/04c87cad179a51c4d3228576aed0165265851d9f"
+        },
+        "date": 1795830478911,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_signals_percentage",
+            "value": 0,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - Dropped Metrics %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 65.1523548734939,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 66.07059405940593,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 17.125390625,
+            "unit": "MiB",
+            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 17.72265625,
+            "unit": "MiB",
+            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "metrics_produced_rate",
+            "value": 96663.42360880459,
+            "unit": "metrics/sec",
+            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - Metric Throughput"
+          },
+          {
+            "name": "metrics_received_rate",
+            "value": 96663.42360880459,
+            "unit": "metrics/sec",
+            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - Metric Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002013,
+            "unit": "seconds",
+            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 4436647.672042441,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 4473730.113745319,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - Network Utilization"
+          },
+          {
+            "name": "dropped_signals_percentage",
+            "value": 0,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - Dropped Spans %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 67.23052435642508,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 67.65204811796663,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 17.719791666666666,
+            "unit": "MiB",
+            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 18.36328125,
+            "unit": "MiB",
+            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "spans_produced_rate",
+            "value": 96663.90691212432,
+            "unit": "spans/sec",
+            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - Span Throughput"
+          },
+          {
+            "name": "spans_received_rate",
+            "value": 98330.52599681613,
+            "unit": "spans/sec",
+            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - Span Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.001713,
+            "unit": "seconds",
+            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 14570168.408381676,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 14488140.920298051,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - Network Utilization"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 64.89147865291194,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 65.31876390605686,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 17.324348958333335,
+            "unit": "MiB",
+            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 18.01953125,
+            "unit": "MiB",
+            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 98338.94599997047,
+            "unit": "logs/sec",
+            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 98338.94599997047,
+            "unit": "logs/sec",
+            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.001782,
+            "unit": "seconds",
+            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 2742367.7949424735,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 2887125.7645803657,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 27.886894323061963,
+            "unit": "bytes/log",
+            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 31.288100801032336,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 32.894249285217526,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 27.949739583333333,
+            "unit": "MiB",
+            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 29.18359375,
+            "unit": "MiB",
+            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 98348.68195459619,
+            "unit": "logs/sec",
+            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 98320.41654809556,
+            "unit": "logs/sec",
+            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002675,
+            "unit": "seconds",
+            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 780075.1579006548,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 1130739.5659303174,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 7.934009896297217,
+            "unit": "bytes/log",
+            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_signals_percentage",
+            "value": -0.007777675054967403,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - Dropped Metrics %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 36.55084718849055,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 37.951676138575316,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 28.830208333333335,
+            "unit": "MiB",
+            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 30.83203125,
+            "unit": "MiB",
+            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "metrics_produced_rate",
+            "value": 98341.50334489836,
+            "unit": "metrics/sec",
+            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - Metric Throughput"
+          },
+          {
+            "name": "metrics_received_rate",
+            "value": 98313.24000152982,
+            "unit": "metrics/sec",
+            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - Metric Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.007055,
+            "unit": "seconds",
+            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 1092665.4355449812,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 1604724.7869770108,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - Network Utilization"
+          },
+          {
+            "name": "dropped_signals_percentage",
+            "value": -0.00777363171800971,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - Dropped Spans %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 45.079791544557956,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 46.96699930378278,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 41.594791666666666,
+            "unit": "MiB",
+            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 44.89453125,
+            "unit": "MiB",
+            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "spans_produced_rate",
+            "value": 98322.02731882961,
+            "unit": "spans/sec",
+            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - Span Throughput"
+          },
+          {
+            "name": "spans_received_rate",
+            "value": 98458.55680203151,
+            "unit": "spans/sec",
+            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - Span Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.001692,
+            "unit": "seconds",
+            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 4310432.441184554,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 5066827.86957611,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - Network Utilization"
           }
         ]
       }
