@@ -11,7 +11,6 @@ use otel_arrow_dfe_engine::shared::capability::auth::api_key_provider::ApiKeyPro
 use otel_arrow_dfe_engine::shared::extension::{ControlChannel, Extension as SharedExtension};
 use otel_arrow_dfe_engine::shared::message::SharedReceiver;
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
-use otel_arrow_dfe_telemetry::testing::EmptyAttributes;
 use secrecy::{ExposeSecret, SecretString};
 use tempfile::NamedTempFile;
 
@@ -183,7 +182,7 @@ fn make_extension(config: Config) -> FlatFileApiKeyAuthExtension {
         BackgroundProviderRefreshPolicy::once()
     };
     let registry = TelemetryRegistryHandle::new();
-    let metric_set = registry.register_metric_set::<FlatFileApiKeyAuthMetrics>(EmptyAttributes());
+    let metrics = FlatFileApiKeyAuthMetrics::new_test(&registry);
     let attributes =
         ApiKeyAttributes::from_map(config.attributes.clone()).expect("valid attributes");
     FlatFileApiKeyAuthExtension::new(
@@ -191,7 +190,7 @@ fn make_extension(config: Config) -> FlatFileApiKeyAuthExtension {
         FlatFileApiKeyAuth::new(config, attributes),
         refresh_policy,
         tx,
-        BackgroundProviderMetricsTracker::new(metric_set),
+        BackgroundProviderMetricsTracker::new(metrics),
     )
 }
 

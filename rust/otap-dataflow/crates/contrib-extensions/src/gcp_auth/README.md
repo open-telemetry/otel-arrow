@@ -78,14 +78,16 @@ the `GCE_METADATA_HOST` environment variable is set) with the
 
 ## Telemetry
 
-Each extension instance registers the `extension.gcp_auth` metric set:
+Metric set: `extension.auth` (shared).
 
-| Metric | Instrument | Unit | Description |
-| --- | --- | --- | --- |
-| `auth_successes` | `Counter<u64>` | `{acquisition}` | Number of successful token acquisitions. |
-| `auth_failures` | `Counter<u64>` | `{acquisition}` | Number of failed token acquisitions. |
-| `auth_token_publish` | `Counter<u64>` | `{token}` | Number of tokens published to consumers via the watch channel. |
-| `auth_success_latency` | `Mmsc` | `ms` | Latency of successful token acquisitions (min/max/sum/count). |
+| Metric | Metric set | Type | Unit | Description |
+| --- | --- | --- | --- | --- |
+| `acquisitions` | `extension.auth` | Counter | `{acquisition}` | Credential acquisitions partitioned by `outcome` (`success`, `failure`). |
+| `publishes` | `extension.auth` | Counter | `{publication}` | Credentials or tokens published to consumers via the watch channel partitioned by `outcome`. |
+| `duration` | `extension.auth` | Mmsc | `s` | Acquisition duration in seconds partitioned by `outcome` (min/max/sum/count). |
 
-Failed background token refresh attempts also emit the
-`gcp_auth.token_refresh_failed` warning event with the acquisition error.
+Events:
+
+| Event | Severity | Description |
+| --- | --- | --- |
+| `gcp_auth.token_refresh_failed` | `warn` | A credential acquisition failed; the loop retries with backoff. |

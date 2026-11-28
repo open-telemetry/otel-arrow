@@ -12,7 +12,6 @@ use otel_arrow_dfe_engine::shared::capability::auth::sasl_credential_provider::S
 use otel_arrow_dfe_engine::shared::extension::{ControlChannel, Extension};
 use otel_arrow_dfe_engine::shared::message::SharedReceiver;
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
-use otel_arrow_dfe_telemetry::testing::EmptyAttributes;
 
 use super::*;
 use crate::common::azure_key_vault::testing::{
@@ -27,7 +26,7 @@ fn extension(transport: Arc<FakeTransport>, config: Config) -> AzureKeyVaultSasl
         RetryOptions::none(),
     );
     let registry = TelemetryRegistryHandle::new();
-    let metrics = registry.register_metric_set::<AzureKeyVaultSaslAuthMetrics>(EmptyAttributes());
+    let metrics = AzureKeyVaultSaslAuthMetrics::new_test(&registry);
     let (tx, _rx) = watch::channel(None);
     AzureKeyVaultSaslAuthExtension::new(
         "vault-test",

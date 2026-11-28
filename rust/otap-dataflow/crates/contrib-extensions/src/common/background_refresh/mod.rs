@@ -9,7 +9,9 @@ mod provider;
 #[cfg(test)]
 mod tests;
 
-pub use metrics::{BackgroundProviderMetrics, BackgroundProviderMetricsTracker};
+pub use metrics::{
+    AuthExtensionAcquisitionMetrics, BackgroundProviderMetrics, BackgroundProviderMetricsTracker,
+};
 pub use provider::{
     BackgroundProviderExtension, BackgroundProviderRefreshPolicy, BackgroundProviderSource,
 };

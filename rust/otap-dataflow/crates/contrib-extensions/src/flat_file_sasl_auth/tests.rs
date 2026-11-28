@@ -25,7 +25,6 @@ use otel_arrow_dfe_engine::shared::extension::{ControlChannel, Extension as Shar
 use otel_arrow_dfe_engine::shared::message::SharedReceiver;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
-use otel_arrow_dfe_telemetry::testing::EmptyAttributes;
 use secrecy::ExposeSecret;
 use tempfile::TempDir;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -83,8 +82,8 @@ fn assert_pair(credential: &SaslCredential, username: &str, password: &str) {
 
 fn make_tracker() -> BackgroundProviderMetricsTracker<FlatFileSaslAuthMetrics> {
     let registry = TelemetryRegistryHandle::new();
-    let metric_set = registry.register_metric_set::<FlatFileSaslAuthMetrics>(EmptyAttributes());
-    BackgroundProviderMetricsTracker::new(metric_set)
+    let metrics = FlatFileSaslAuthMetrics::new_test(&registry);
+    BackgroundProviderMetricsTracker::new(metrics)
 }
 
 fn make_extension(config: Config) -> FlatFileSaslAuthExtension {
@@ -166,9 +165,8 @@ impl RunningExtension {
             .expect("extension task joins")
             .expect("extension exits cleanly");
         assert_eq!(terminal.deadline(), deadline);
-        assert_eq!(
-            terminal.metrics().len(),
-            1,
+        assert!(
+            !terminal.metrics().is_empty(),
             "final auth metrics are returned"
         );
         terminal

@@ -9,7 +9,6 @@ use futures::StreamExt;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider as SharedBearerTokenProvider;
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
-use otel_arrow_dfe_telemetry::testing::EmptyAttributes;
 use tokio::sync::watch;
 use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -28,8 +27,8 @@ fn config_from_json(value: serde_json::Value) -> Result<Config, ConfigError> {
 
 fn make_tracker() -> BackgroundProviderMetricsTracker<GcpAuthMetrics> {
     let registry = TelemetryRegistryHandle::new();
-    let metric_set = registry.register_metric_set::<GcpAuthMetrics>(EmptyAttributes());
-    BackgroundProviderMetricsTracker::new(metric_set)
+    let metrics = GcpAuthMetrics::new_test(&registry);
+    BackgroundProviderMetricsTracker::new(metrics)
 }
 
 fn make_extension(endpoint: &str) -> GcpAuthExtension {
@@ -322,28 +321,32 @@ async fn empty_scopes_omits_query_param() {
 fn metrics_tracker_records_snapshots_and_reports() {
     let mut tracker = make_tracker();
 
-    let before = tracker.snapshot();
-    assert!(
-        before.get_metrics().iter().all(|m| m.is_zero()),
-        "a new tracker starts at zero"
-    );
+    let before = tracker.terminal_snapshots();
+    assert!(before.is_empty(), "a fresh tracker has no touched buckets");
 
-    tracker.record_success(8.5);
-    tracker.record_failure();
+    tracker.record_success(0.0085);
+    tracker.record_failure(0.005);
     tracker.record_publish();
 
-    let after = tracker.snapshot();
+    let after = tracker.terminal_snapshots();
+    assert_eq!(after.len(), 2, "2 outcome snapshots (success and failure)");
     assert!(
-        after.get_metrics().iter().all(|m| !m.is_zero()),
-        "every metric is non-zero after recording"
+        after
+            .iter()
+            .all(|s| s.get_metrics().iter().any(|m| !m.is_zero())),
+        "every outcome snapshot has recorded metrics"
     );
 
     let (rx, mut reporter) =
         otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
+    tracker.record_success(0.01);
+    tracker.record_failure(0.005);
+    tracker.record_publish();
     tracker.report(&mut reporter).expect("report succeeds");
-    assert!(
-        rx.try_recv().is_ok(),
-        "reporter received the metric snapshot"
+    assert_eq!(
+        rx.try_iter().count(),
+        2,
+        "reporter received both metric snapshots"
     );
 }
 

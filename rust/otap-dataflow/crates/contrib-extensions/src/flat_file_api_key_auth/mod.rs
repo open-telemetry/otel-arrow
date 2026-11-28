@@ -87,9 +87,8 @@ fn create(
     let (config, attributes) = parse_config(&ext_config.config)?;
 
     let entity_key = ext_ctx.register_extension_entity(name.clone(), ExtensionVariant::Shared);
-    let metric_set =
-        ext_ctx.register_metric_set_for_entity::<FlatFileApiKeyAuthMetrics>(entity_key);
-    let tracker = BackgroundProviderMetricsTracker::new(metric_set);
+    let metrics = FlatFileApiKeyAuthMetrics::register(ext_ctx, entity_key);
+    let tracker = BackgroundProviderMetricsTracker::new(metrics);
 
     let (tx, _rx) = watch::channel(None);
     let refresh_policy = if config.key_secret_file.is_some() {
