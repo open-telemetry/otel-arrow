@@ -1598,7 +1598,7 @@ mod tests {
     use otel_arrow_dfe_config::context::transport_headers::{
         TransportHeader, TransportHeaders, ValueKind,
     };
-    use otel_arrow_dfe_engine::pdata_context::Metadata;
+    use otel_arrow_dfe_engine::testing::context;
 
     use otel_arrow_dfe_engine::testing::processor::TestContext;
     use otel_arrow_dfe_pdata::otap::OtapBatchStore;
@@ -4056,8 +4056,9 @@ mod tests {
         });
     }
 
-    /// AllAggregated flush path: all contributing inputs share one peer.
-    /// Guarantee: the flushed aggregate's `peer_addr` equals that peer.
+    /// Scenario: AllAggregated flush path; all contributing inputs share one
+    /// peer.
+    /// Guarantees: the flushed aggregate's `peer_addr` equals that peer.
     #[test]
     fn test_flush_peer_addr_preserved_when_single_peer() {
         let peer: SocketAddr = "10.0.0.1:5000".parse().unwrap();
@@ -4077,7 +4078,7 @@ mod tests {
             Action::DrainPdata {
                 actions: vec![PdataAction::AssertCustom(Box::new(move |out| {
                     assert_eq!(
-                        out.peer_addr(),
+                        context::peer(out.metadata()),
                         Some(peer),
                         "single-peer aggregate must preserve peer_addr"
                     );
@@ -4087,8 +4088,9 @@ mod tests {
         run_test(config, actions);
     }
 
-    /// AllAggregated flush path: contributing inputs came from distinct peers.
-    /// Guarantee: the flushed aggregate's `peer_addr` is `None`.
+    /// Scenario: AllAggregated flush path; contributing inputs came from
+    /// distinct peers.
+    /// Guarantees: the flushed aggregate's `peer_addr` is `None`.
     #[test]
     fn test_flush_peer_addr_dropped_when_mixed_peers() {
         let peer_a: SocketAddr = "10.0.0.1:5000".parse().unwrap();
@@ -4109,7 +4111,7 @@ mod tests {
             Action::DrainPdata {
                 actions: vec![PdataAction::AssertCustom(Box::new(|out| {
                     assert_eq!(
-                        out.peer_addr(),
+                        context::peer(out.metadata()),
                         None,
                         "mixed-peer aggregate must not be attributed to one peer"
                     );
@@ -4128,17 +4130,17 @@ mod tests {
     #[test]
     fn test_passthrough_subscriber_merges_single_input_metadata() {
         let peer: SocketAddr = "10.0.0.1:5000".parse().unwrap();
-        let mut metadata = Metadata::default();
         let mut headers = TransportHeaders::new();
         headers.push(TransportHeader::new(
             ContextEntryName::try_from("tenant").expect("valid entry name"),
             ValueKind::Text,
             *b"acme",
         ));
-        metadata.set_transport_headers(headers);
-        metadata.set_peer_addr(peer);
-        let mut expected = Metadata::default();
-        expected.set_peer_addr(peer);
+        let metadata = context::ContextFixture::builder()
+            .capture(&headers)
+            .compile_standalone()
+            .form_captured(&headers, Some(peer));
+        let expected = context::peer_metadata(peer);
         let config = json!({});
         let actions = vec![
             Action::SendPdataWithMetadata {

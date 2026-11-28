@@ -203,6 +203,7 @@ mod tests {
     use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, TransportHeaders};
     use otel_arrow_dfe_config::engine::OtelDataflowSpec;
     use otel_arrow_dfe_engine::PipelineFactory;
+    use otel_arrow_dfe_engine::testing::context::{ContextFixture, headers_metadata};
 
     fn context_name(raw: &str) -> ContextEntryName {
         ContextEntryName::try_from(raw).expect("valid test context entry name")
@@ -251,11 +252,12 @@ mod tests {
         let mut check = TransportHeaderCheck::compile(&instruction, bindings.map(|b| &**b))
             .expect("compiled check")
             .expect("header instruction");
+        let empty = ContextFixture::builder().compile_standalone().form_empty();
         for headers in suv {
-            let mut metadata = Metadata::default();
-            if let Some(headers) = headers {
-                metadata.set_transport_headers(headers.clone());
-            }
+            let metadata = match headers {
+                Some(headers) => headers_metadata(headers),
+                None => empty.clone(),
+            };
             check.observe(&metadata).expect("read succeeds");
         }
         check.passed()

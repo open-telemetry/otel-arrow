@@ -933,7 +933,7 @@ mod tests {
     use otel_arrow_dfe_engine::admission::{AdmissionBinder, AdmissionContext, AdmissionDecision};
     use otel_arrow_dfe_engine::capability::CapabilityError;
     use otel_arrow_dfe_engine::capability::auth::{
-        AuthorizedIdentity, AuthzDecision, BearerToken, DenyReason,
+        AuthorizedIdentity, AuthzDecision, BearerToken, ClaimValue, DenyReason,
     };
     use otel_arrow_dfe_engine::clock;
     use otel_arrow_dfe_engine::context::ControllerContext;
@@ -945,6 +945,9 @@ mod tests {
     use otel_arrow_dfe_engine::shared::message::{SharedReceiver, SharedSender};
     use otel_arrow_dfe_engine::shared::receiver as shared_receiver;
     use otel_arrow_dfe_engine::testing::{
+        context::{
+            ARRIVAL_NODE, ContextFixture, captured_headers, identity_claim, identity_claim_names,
+        },
         dst::{SimClock, dst_seeds},
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
         test_node,
@@ -1045,6 +1048,18 @@ mod tests {
             }
         ]))
         .expect("valid authorized identity policy")
+    }
+
+    /// Installs the fixture's arrival receiver bindings on a hand-built
+    /// receiver, as the pipeline build does for a configured receiver.
+    fn with_arrival_fixture(
+        receiver: ReceiverWrapper<OtapPdata>,
+        fixture: &ContextFixture,
+    ) -> ReceiverWrapper<OtapPdata> {
+        otel_arrow_dfe_engine::testing::receiver::with_node_bindings(
+            receiver,
+            fixture.node_bindings(ARRIVAL_NODE),
+        )
     }
 
     fn test_config(addr: SocketAddr) -> Config {
@@ -2318,7 +2333,7 @@ mod tests {
         );
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario(grpc_endpoint))
             .run_validation_concurrent(validation_procedure());
     }
@@ -2400,7 +2415,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation_procedure());
     }
@@ -2501,7 +2516,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
@@ -2576,21 +2591,21 @@ mod tests {
                     .await
                     .expect("authorized gRPC request must reach downstream")
                     .expect("downstream channel must remain open");
-                let entries = pdata
-                    .authorized_identity_entries()
-                    .expect("authorized identity entries must be captured");
                 assert_eq!(
-                    entries
-                        .get("customer_id")
-                        .and_then(|entry| entry.value().as_str()),
-                    Some("test-subject")
+                    identity_claim(pdata.metadata(), "customer_id"),
+                    Some(ClaimValue::one("test-subject")),
+                    "authorized identity claim must be captured"
                 );
             }) as Pin<Box<dyn Future<Output = ()>>>
         };
 
         test_runtime
-            .set_receiver(receiver)
-            .with_authorized_identity_policy(Some(authorized_identity_policy()))
+            .set_receiver(with_arrival_fixture(
+                receiver,
+                &ContextFixture::builder()
+                    .authorized_identity(&authorized_identity_policy())
+                    .compile_standalone(),
+            ))
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
@@ -2690,7 +2705,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
@@ -2764,21 +2779,21 @@ mod tests {
                     .await
                     .expect("authorized HTTP request must reach downstream")
                     .expect("downstream channel must remain open");
-                let entries = pdata
-                    .authorized_identity_entries()
-                    .expect("authorized identity entries must be captured");
                 assert_eq!(
-                    entries
-                        .get("customer_id")
-                        .and_then(|entry| entry.value().as_str()),
-                    Some("test-subject")
+                    identity_claim(pdata.metadata(), "customer_id"),
+                    Some(ClaimValue::one("test-subject")),
+                    "authorized identity claim must be captured"
                 );
             }) as Pin<Box<dyn Future<Output = ()>>>
         };
 
         test_runtime
-            .set_receiver(receiver)
-            .with_authorized_identity_policy(Some(authorized_identity_policy()))
+            .set_receiver(with_arrival_fixture(
+                receiver,
+                &ContextFixture::builder()
+                    .authorized_identity(&authorized_identity_policy())
+                    .compile_standalone(),
+            ))
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
@@ -2845,15 +2860,19 @@ mod tests {
                     .expect("HTTP request must reach downstream")
                     .expect("downstream channel must remain open");
                 assert!(
-                    pdata.authorized_identity_entries().is_none(),
+                    identity_claim_names(pdata.metadata()).is_empty(),
                     "unauthenticated pdata must not carry trusted identity entries"
                 );
             }) as Pin<Box<dyn Future<Output = ()>>>
         };
 
         test_runtime
-            .set_receiver(receiver)
-            .with_authorized_identity_policy(Some(authorized_identity_policy()))
+            .set_receiver(with_arrival_fixture(
+                receiver,
+                &ContextFixture::builder()
+                    .authorized_identity(&authorized_identity_policy())
+                    .compile_standalone(),
+            ))
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
@@ -2943,7 +2962,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
@@ -3008,7 +3027,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation(|_| async {});
     }
@@ -3083,7 +3102,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation(|_| async {});
     }
@@ -3174,7 +3193,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
@@ -3242,7 +3261,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation(|_| async {});
     }
@@ -3310,7 +3329,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation(|_| async {});
     }
@@ -3419,7 +3438,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
@@ -3504,7 +3523,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
@@ -3593,7 +3612,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
@@ -3674,7 +3693,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
@@ -3742,7 +3761,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation(|_| async {});
     }
@@ -3823,7 +3842,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation(|_| async {});
     }
@@ -3900,7 +3919,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(nack_scenario)
             .run_validation_concurrent(nack_validation);
     }
@@ -4042,7 +4061,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation(|mut ctx| async move {
                 assert!(matches!(ctx.recv().await, Err(RecvError::Closed)));
@@ -4154,7 +4173,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation(validation);
     }
@@ -4293,7 +4312,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation(validation);
     }
@@ -4411,7 +4430,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation(|mut ctx| async move {
                 assert!(matches!(ctx.recv().await, Err(RecvError::Closed)));
@@ -4517,7 +4536,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(nack_scenario)
             .run_validation_concurrent(nack_validation);
     }
@@ -4600,7 +4619,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
@@ -4693,7 +4712,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
@@ -4753,7 +4772,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation(|_| async {});
     }
@@ -4813,7 +4832,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation(|_| async {});
     }
@@ -4922,7 +4941,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
@@ -5049,7 +5068,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
@@ -5113,9 +5132,10 @@ mod tests {
         Ok((status, body))
     }
 
-    /// Verifies that the OTLP gRPC receiver captures transport headers from gRPC
-    /// metadata when a capture policy is configured, and attaches them to the
-    /// `OtapPdata` context.
+    /// Scenario: a gRPC export carries an `x-tenant-id` metadata entry and the
+    /// receiver's arrival binding captures that header.
+    /// Guarantees: the forwarded pdata carries exactly one captured
+    /// `x-tenant-id` header with the sent text value.
     #[cfg_attr(any(windows), ignore = "Skipping on Windows due to flakiness")]
     #[test]
     fn test_otlp_grpc_transport_header_capture() {
@@ -5195,8 +5215,7 @@ mod tests {
                     .expect("No logs message received");
 
                 // Verify transport headers were captured.
-                let headers = pdata
-                    .transport_headers()
+                let headers = captured_headers(pdata.metadata())
                     .expect("pdata should have transport headers when capture policy is set");
                 let tenant_headers: Vec<_> = headers.find_by_name("x-tenant-id").collect();
                 assert_eq!(
@@ -5220,16 +5239,21 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
-            .with_capture_policy(Some(capture_policy))
+            .set_receiver(with_arrival_fixture(
+                receiver,
+                &ContextFixture::builder()
+                    .header_capture(&capture_policy)
+                    .compile_standalone(),
+            ))
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
 
-    /// Verifies that the OTLP gRPC receiver correctly decodes binary metadata
-    /// values (keys ending in `-bin`) and stores the raw bytes rather than the
-    /// base64 wire encoding. Storing the wire form would cause double-encoding
-    /// on downstream gRPC propagation.
+    /// Scenario: a gRPC export carries a binary `x-trace-bin` metadata entry and
+    /// the receiver's arrival binding captures that header.
+    /// Guarantees: the captured header holds the raw decoded bytes rather than
+    /// the base64 wire encoding, so downstream gRPC propagation does not
+    /// double-encode it.
     #[cfg_attr(any(windows), ignore = "Skipping on Windows due to flakiness")]
     #[test]
     fn test_otlp_grpc_transport_header_capture_binary() {
@@ -5314,8 +5338,7 @@ mod tests {
 
                 // Verify transport headers contain the raw decoded bytes,
                 // not the base64 wire encoding.
-                let headers = pdata
-                    .transport_headers()
+                let headers = captured_headers(pdata.metadata())
                     .expect("pdata should have transport headers when capture policy is set");
                 let trace_headers: Vec<_> = headers.find_by_name("x-trace-bin").collect();
                 assert_eq!(
@@ -5339,15 +5362,19 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
-            .with_capture_policy(Some(capture_policy))
+            .set_receiver(with_arrival_fixture(
+                receiver,
+                &ContextFixture::builder()
+                    .header_capture(&capture_policy)
+                    .compile_standalone(),
+            ))
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
 
-    /// Verifies that when no capture policy is configured, the OTLP gRPC receiver
-    /// does NOT attach transport headers to `OtapPdata` even when gRPC metadata
-    /// contains matching headers.
+    /// Scenario: a gRPC export carries an `x-tenant-id` metadata entry but the
+    /// receiver has no header capture policy.
+    /// Guarantees: the forwarded pdata carries no captured transport headers.
     #[cfg_attr(any(windows), ignore = "Skipping on Windows due to flakiness")]
     #[test]
     fn test_otlp_grpc_no_transport_headers_without_policy() {
@@ -5425,7 +5452,7 @@ mod tests {
 
                 // Without a capture policy, transport headers should be absent.
                 assert!(
-                    pdata.transport_headers().is_none(),
+                    captured_headers(pdata.metadata()).is_none(),
                     "pdata should NOT have transport headers when no capture policy is set"
                 );
 
@@ -5437,15 +5464,17 @@ mod tests {
             }) as Pin<Box<dyn Future<Output = ()>>>
         };
 
-        // Note: no `.with_capture_policy()` call -- policy is None by default.
+        // Note: no header capture is configured for the arrival receiver.
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
 
-    /// Verifies that the OTLP HTTP receiver captures transport headers from HTTP
-    /// request headers when a capture policy is configured.
+    /// Scenario: an HTTP export carries an `x-tenant-id` request header and the
+    /// receiver's arrival binding captures that header.
+    /// Guarantees: the forwarded pdata carries exactly one captured
+    /// `x-tenant-id` header with the sent text value.
     #[cfg_attr(any(windows), ignore = "Skipping on Windows due to flakiness")]
     #[test]
     fn test_otlp_http_transport_header_capture() {
@@ -5520,8 +5549,7 @@ mod tests {
                     .expect("No logs message received");
 
                 // Verify transport headers were captured from HTTP headers.
-                let headers = pdata
-                    .transport_headers()
+                let headers = captured_headers(pdata.metadata())
                     .expect("pdata should have transport headers when capture policy is set");
                 let tenant_headers: Vec<_> = headers.find_by_name("x-tenant-id").collect();
                 assert_eq!(
@@ -5544,14 +5572,19 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
-            .with_capture_policy(Some(capture_policy))
+            .set_receiver(with_arrival_fixture(
+                receiver,
+                &ContextFixture::builder()
+                    .header_capture(&capture_policy)
+                    .compile_standalone(),
+            ))
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
 
-    /// Verifies that the OTLP HTTP receiver does NOT attach transport headers
-    /// when no capture policy is configured.
+    /// Scenario: an HTTP export carries an `x-tenant-id` request header but the
+    /// receiver has no header capture policy.
+    /// Guarantees: the forwarded pdata carries no captured transport headers.
     #[test]
     fn test_otlp_http_no_transport_headers_without_policy() {
         let test_runtime = TestRuntime::new();
@@ -5614,7 +5647,7 @@ mod tests {
 
                 // Without a capture policy, transport headers should be absent.
                 assert!(
-                    pdata.transport_headers().is_none(),
+                    captured_headers(pdata.metadata()).is_none(),
                     "pdata should NOT have transport headers when no capture policy is set"
                 );
 
@@ -5628,7 +5661,7 @@ mod tests {
 
         // No capture policy set.
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }

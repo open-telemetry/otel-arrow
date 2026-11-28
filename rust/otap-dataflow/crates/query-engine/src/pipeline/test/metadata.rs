@@ -3,24 +3,25 @@
 
 //! This test suite contains tests exercising the function library that accesses batch metadata.
 //!
-//! Note that many of the tests in this module are manually creating both the `Metadata` (required
-//! to be populated on the execution state) and the `NodeBindings` (required to be populated on
-//! `PipelineOptions` for planning). Because of this, these test cases only cover the evaluation of
-//! the pipeline. Some Additional test coverage must exist on the DFE node implementations to
-//! ensure that these are properly populated when the query-engine is embedded within some
-//! pipeline component.
+//! Note that the tests in this module compile a context fixture pipeline whose query node reads
+//! one transport header, then take that node's `NodeBindings` (required to be populated on
+//! `PipelineOptions` for planning) and form the `Metadata` (required to be populated on the
+//! execution state) from the same compile. Because of this, these test cases only cover the
+//! evaluation of the pipeline. Some Additional test coverage must exist on the DFE node
+//! implementations to ensure that these are properly populated when the query-engine is embedded
+//! within some pipeline component.
 //!
 
 use std::sync::Arc;
 
 use otel_arrow_contrib_data_engine_kql_parser::Parser;
 use otel_arrow_dfe_config::ContextEntryName;
-use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, ValueKind};
+use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, TransportHeaders};
 use otel_arrow_dfe_engine::pdata_context::{
     ContextDomain, ContextEntrySelector, ContextEntrySelectorForm, ContextEntryTake,
-    ContextEntryTarget, ContextMaterializationPlan, ContextNameMatching, Metadata, NodeBindings,
-    ValueRead,
+    ContextEntryTarget, ContextNameMatching, Metadata, NodeBindings,
 };
+use otel_arrow_dfe_engine::testing::context::ContextFixture;
 use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
 use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::*;
 use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::*;
@@ -50,41 +51,51 @@ fn create_multi_row_log_batch(num_records: usize) -> OtapArrowRecords {
     otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(records)))
 }
 
-/// create node bindings with a selector for the given header name
-fn node_bindings_for_transport_header(header_name: &str) -> NodeBindings {
-    let context_entry_selector = ContextEntrySelector {
-        target: ContextEntryTarget::Primitive {
-            domain: ContextDomain::TransportHeader,
-            name: ContextEntryName::try_from(header_name).unwrap(),
-            matching: ContextNameMatching::Exact,
-        },
-        form: ContextEntrySelectorForm::StoredKeyValue,
-        take: ContextEntryTake::First,
-    };
+/// Node id of the compile-only query node that reads the transport header.
+const QUERY_NODE: &str = "query";
 
-    let context_materialization_plan = ContextMaterializationPlan::default();
-    let value_read =
-        ValueRead::compile_for_test(&context_entry_selector, &context_materialization_plan)
-            .unwrap();
-    let mut node_bindings = NodeBindings::default();
-    node_bindings.set_value_reads(vec![value_read]);
-
-    node_bindings
+/// Compiled context in which the query node reads one transport header.
+struct HeaderContext {
+    fixture: ContextFixture,
+    headers: TransportHeaders,
 }
 
-/// insert a new transport header into the metadata
-///
-/// note: does not replace existing with same name, so duplicates may be created.
-fn add_transport_header(metadata: &mut Metadata, header_name: &str, header_value: &str) {
-    let transport_header = TransportHeader::new(
-        ContextEntryName::try_from(header_name).unwrap(),
-        ValueKind::Text,
-        header_value.as_bytes().to_vec().into_boxed_slice(),
-    );
+impl HeaderContext {
+    /// Compiles a pipeline that captures `header_name` at arrival and whose query node reads it.
+    fn new(header_name: &str, header_value: &str) -> Self {
+        let name = ContextEntryName::try_from(header_name).unwrap();
+        let context_entry_selector = ContextEntrySelector {
+            target: ContextEntryTarget::Primitive {
+                domain: ContextDomain::TransportHeader,
+                name: name.clone(),
+                matching: ContextNameMatching::Exact,
+            },
+            form: ContextEntrySelectorForm::StoredKeyValue,
+            take: ContextEntryTake::First,
+        };
+        let mut headers = TransportHeaders::new();
+        headers.push(TransportHeader::text(name, header_value));
+        let fixture = ContextFixture::builder()
+            .capture(&headers)
+            .consumer(QUERY_NODE, [context_entry_selector])
+            .compile_standalone();
+        Self { fixture, headers }
+    }
 
-    let mut transport_headers = metadata.take_transport_headers().unwrap_or_default();
-    transport_headers.push(transport_header);
-    metadata.set_transport_headers(transport_headers);
+    /// Returns the query node's bindings, which read the header.
+    fn node_bindings(&self) -> Arc<NodeBindings> {
+        self.fixture.node_bindings(QUERY_NODE)
+    }
+
+    /// Returns context in which the header was captured at arrival.
+    fn with_header(&self) -> Metadata {
+        self.fixture.form_captured(&self.headers, None)
+    }
+
+    /// Returns context formed without any headers.
+    fn without_header(&self) -> Metadata {
+        self.fixture.form_empty()
+    }
 }
 
 async fn execute_pipeline(
@@ -111,12 +122,12 @@ async fn execute_pipeline(
 async fn test_simple_filter_batches_having_transport_header() {
     let header_name = "foo";
     let header_val = "bar";
+    let context = HeaderContext::new(header_name, header_val);
     let pipeline_options = PipelineOptions {
-        node_bindings: Arc::new(node_bindings_for_transport_header(header_name)),
+        node_bindings: context.node_bindings(),
         ..Default::default()
     };
-    let mut metadata = Metadata::default();
-    add_transport_header(&mut metadata, header_name, header_val);
+    let metadata = context.with_header();
 
     let input_batch = create_single_row_log_batch(Default::default());
     let query = "signals | where has_transport_header(\"foo\")";
@@ -132,8 +143,13 @@ async fn test_simple_filter_batches_having_transport_header() {
     assert_eq!(result.num_items(), 1);
 
     // assert we return an empty batch (all rows filtered out) when the header isn't present
-    let result_empty =
-        execute_pipeline(query, pipeline_options, input_batch, Metadata::default()).await;
+    let result_empty = execute_pipeline(
+        query,
+        pipeline_options,
+        input_batch,
+        context.without_header(),
+    )
+    .await;
     assert!(result_empty.is_empty())
 }
 
@@ -145,12 +161,12 @@ async fn test_simple_filter_batches_having_transport_header() {
 async fn test_filter_batches_not_having_transport_header() {
     let header_name = "foo";
     let header_val = "bar";
+    let context = HeaderContext::new(header_name, header_val);
     let pipeline_options = PipelineOptions {
-        node_bindings: Arc::new(node_bindings_for_transport_header(header_name)),
+        node_bindings: context.node_bindings(),
         ..Default::default()
     };
-    let mut metadata = Metadata::default();
-    add_transport_header(&mut metadata, header_name, header_val);
+    let metadata = context.with_header();
 
     let input_batch = create_single_row_log_batch(Default::default());
     let query = "signals | where not(has_transport_header(\"foo\"))";
@@ -166,8 +182,13 @@ async fn test_filter_batches_not_having_transport_header() {
     assert!(result.is_empty());
 
     // assert we return an empty batch (all rows filtered out) when the header isn't present
-    let result_empty =
-        execute_pipeline(query, pipeline_options, input_batch, Metadata::default()).await;
+    let result_empty = execute_pipeline(
+        query,
+        pipeline_options,
+        input_batch,
+        context.without_header(),
+    )
+    .await;
     assert_eq!(result_empty.num_items(), 1);
 }
 
@@ -178,16 +199,16 @@ async fn test_filter_batches_not_having_transport_header() {
 async fn test_complex_filter_batches_by_metadata() {
     let header_name = "foo";
     let header_val = "bar";
+    let context = HeaderContext::new(header_name, header_val);
     let pipeline_options = PipelineOptions {
-        node_bindings: Arc::new(node_bindings_for_transport_header(header_name)),
+        node_bindings: context.node_bindings(),
         ..Default::default()
     };
     let query =
         "signals | where attributes[\"attr.1\"] == \"val\" or has_transport_header(\"foo\")";
 
     // this should match on the metadata
-    let mut metadata = Metadata::default();
-    add_transport_header(&mut metadata, header_name, header_val);
+    let metadata = context.with_header();
     let result = execute_pipeline(
         query,
         pipeline_options.clone(),
@@ -198,7 +219,7 @@ async fn test_complex_filter_batches_by_metadata() {
     assert_eq!(result.num_items(), 1);
 
     // this should match on the attribute, but not the header
-    let metadata = Metadata::default();
+    let metadata = context.without_header();
     let result = execute_pipeline(
         query,
         pipeline_options.clone(),
@@ -209,7 +230,7 @@ async fn test_complex_filter_batches_by_metadata() {
     assert_eq!(result.num_items(), 1);
 
     // this should not match because it has neither attr nor header
-    let metadata = Metadata::default();
+    let metadata = context.without_header();
     let result = execute_pipeline(
         query,
         pipeline_options.clone(),
@@ -227,14 +248,14 @@ async fn test_complex_filter_batches_by_metadata() {
 async fn test_simple_assign_transport_header_presence_as_property() {
     let header_name = "foo";
     let header_val = "bar";
+    let context = HeaderContext::new(header_name, header_val);
     let pipeline_options = PipelineOptions {
-        node_bindings: Arc::new(node_bindings_for_transport_header(header_name)),
+        node_bindings: context.node_bindings(),
         ..Default::default()
     };
 
     // assert it assigns "true" when it has the header
-    let mut metadata = Metadata::default();
-    add_transport_header(&mut metadata, header_name, header_val);
+    let metadata = context.with_header();
     let result = execute_pipeline(
         "signals | set attributes[\"has_header\"] = has_transport_header(\"foo\")",
         pipeline_options.clone(),
@@ -254,7 +275,7 @@ async fn test_simple_assign_transport_header_presence_as_property() {
         "signals | set attributes[\"has_header\"] = has_transport_header(\"foo\")",
         pipeline_options,
         create_single_row_log_batch(Default::default()),
-        Metadata::default(),
+        context.without_header(),
     )
     .await;
 
@@ -268,12 +289,16 @@ async fn test_simple_assign_transport_header_presence_as_property() {
     );
 }
 
+/// Scenario: the result of the metadata access function (has_transport_header) is passed as an
+/// argument to coalesce, in first, middle and swapped argument positions alongside null values
+/// Guarantees: coalesce resolves to the function's "true" result and the filter keeps every row
 #[tokio::test]
 async fn test_batch_metadata_function_result_used_as_function_argument() {
     let header_name = "foo";
     let header_val = "bar";
+    let context = HeaderContext::new(header_name, header_val);
     let pipeline_options = PipelineOptions {
-        node_bindings: Arc::new(node_bindings_for_transport_header(header_name)),
+        node_bindings: context.node_bindings(),
         signal_context: SignalContext::Single(SignalKind::Logs),
         ..Default::default()
     };
@@ -281,8 +306,7 @@ async fn test_batch_metadata_function_result_used_as_function_argument() {
     // this should return a non-null "true", the result from coalesce will not be "false"
     let query = "logs | where coalesce(has_transport_header(\"foo\"), false)";
 
-    let mut metadata = Metadata::default();
-    add_transport_header(&mut metadata, header_name, header_val);
+    let metadata = context.with_header();
     let result = execute_pipeline(
         query,
         pipeline_options.clone(),
@@ -299,8 +323,7 @@ async fn test_batch_metadata_function_result_used_as_function_argument() {
     // call to has_transport_header
     let query = "logs | where coalesce(body, has_transport_header(\"foo\"), false)";
 
-    let mut metadata = Metadata::default();
-    add_transport_header(&mut metadata, header_name, header_val);
+    let metadata = context.with_header();
     let result = execute_pipeline(
         query,
         pipeline_options.clone(),
@@ -317,8 +340,7 @@ async fn test_batch_metadata_function_result_used_as_function_argument() {
     // evaluate correctly
     let query = "logs | where coalesce(has_transport_header(\"foo\"), body, false)";
 
-    let mut metadata = Metadata::default();
-    add_transport_header(&mut metadata, header_name, header_val);
+    let metadata = context.with_header();
     let result = execute_pipeline(
         query,
         pipeline_options.clone(),
@@ -337,14 +359,14 @@ async fn test_batch_metadata_function_result_used_as_function_argument() {
 async fn test_metadata_access_function_result_used_in_and_expr() {
     let header_name = "foo";
     let header_val = "bar";
+    let context = HeaderContext::new(header_name, header_val);
     let pipeline_options = PipelineOptions {
-        node_bindings: Arc::new(node_bindings_for_transport_header(header_name)),
+        node_bindings: context.node_bindings(),
         signal_context: SignalContext::Single(SignalKind::Logs),
         ..Default::default()
     };
 
-    let mut metadata = Metadata::default();
-    add_transport_header(&mut metadata, header_name, header_val);
+    let metadata = context.with_header();
 
     let input_batch =
         create_single_row_log_batch(vec![KeyValue::new("x", AnyValue::new_string("y"))]);
@@ -375,7 +397,7 @@ async fn test_metadata_access_function_result_used_in_and_expr() {
         "logs | where event_name == \"hello.world\" and has_transport_header(\"foo\")",
         pipeline_options,
         input_batch.clone(),
-        Metadata::default(),
+        context.without_header(),
     )
     .await;
 
@@ -389,14 +411,14 @@ async fn test_metadata_access_function_result_used_in_and_expr() {
 async fn test_metadata_access_function_result_used_in_or_expr() {
     let header_name = "foo";
     let header_val = "bar";
+    let context = HeaderContext::new(header_name, header_val);
     let pipeline_options = PipelineOptions {
-        node_bindings: Arc::new(node_bindings_for_transport_header(header_name)),
+        node_bindings: context.node_bindings(),
         signal_context: SignalContext::Single(SignalKind::Logs),
         ..Default::default()
     };
 
-    let mut metadata = Metadata::default();
-    add_transport_header(&mut metadata, header_name, header_val);
+    let metadata = context.with_header();
 
     let input_batch =
         create_single_row_log_batch(vec![KeyValue::new("x", AnyValue::new_string("y"))]);
@@ -427,7 +449,7 @@ async fn test_metadata_access_function_result_used_in_or_expr() {
         "logs | where event_name == \"hello.world\" or has_transport_header(\"foo\")",
         pipeline_options.clone(),
         input_batch.clone(),
-        Metadata::default(),
+        context.without_header(),
     )
     .await;
 
@@ -438,7 +460,7 @@ async fn test_metadata_access_function_result_used_in_or_expr() {
         "logs | where event_name == \"goodbye.world\" or has_transport_header(\"foo\")",
         pipeline_options,
         input_batch.clone(),
-        Metadata::default(),
+        context.without_header(),
     )
     .await;
 

@@ -1591,10 +1591,10 @@ pub mod test_support {
                 .expect("valid test context entry name"),
             header_value.as_bytes(),
         ));
-        let mut context = Context::default();
-        context.set_transport_headers(headers);
 
-        OtapPdata::new(context, proto.into())
+        OtapPdata::new(Context::default(), proto.into()).with_metadata(
+            otel_arrow_dfe_engine::testing::context::headers_metadata(&headers),
+        )
     }
 
     /// Recorder that tracks Ack and Nack notifications.
@@ -1753,13 +1753,8 @@ pub mod test_support {
         use crate::exporters::kafka_exporter::partitioner::partition_key_from_transport_headers;
         use bytes::Bytes;
         use otel_arrow_dfe_config::ContextEntryName;
-        use otel_arrow_dfe_config::context::policy::ContextPolicy;
         use otel_arrow_dfe_config::context::transport_headers::{
             TransportHeader, TransportHeaders, ValueKind,
-        };
-        use otel_arrow_dfe_config::context::transport_policy::{
-            HeaderPropagationPolicy, PropagationDefault, PropagationSelector,
-            PropagationSelectorType,
         };
         use otel_arrow_dfe_engine::pdata_context::HeaderValue;
         use otel_arrow_dfe_otap::pdata::Context;
@@ -1777,10 +1772,13 @@ pub mod test_support {
 
         // Engine/telemetry helpers used by send and header-propagation tests.
         use otel_arrow_dfe_engine::local::exporter::EffectHandler;
-        use otel_arrow_dfe_engine::pdata_context::CompiledHeaderPropagationPolicy;
         use otel_arrow_dfe_engine::runtime_services::{
             CodecEffectHandler, PipelineRuntimeServices,
         };
+        use otel_arrow_dfe_engine::testing::context::{
+            ContextFixture, captured_headers, headers_metadata,
+        };
+        use otel_arrow_dfe_engine::testing::exporter::with_local_handler_bindings;
         use otel_arrow_dfe_engine::testing::{test_node, test_pipeline_runtime_services};
         use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 
@@ -2398,38 +2396,44 @@ pub mod test_support {
         /// instead of being sent without the propagated headers.
         #[tokio::test]
         async fn test_export_context_mismatch_is_permanently_nacked() {
-            let policy_with_route = |route: &str| {
-                let context: ContextPolicy = serde_json::from_value(serde_json::json!({
-                    "entries": {"outbound": [
-                        {"type": "constant", "name": "route", "value": route}
-                    ]}
-                }))
-                .expect("valid context policy");
-                let policy: HeaderPropagationPolicy = serde_json::from_value(serde_json::json!({
-                    "default": {
-                        "selector": {"type": "named", "named": ["outbound:route"]},
-                        "name": "stored_name"
-                    }
-                }))
-                .expect("valid propagation policy");
-                CompiledHeaderPropagationPolicy::compile_standalone(policy, &context)
-                    .expect("propagation policy compiles")
+            let fixture_with_route = |route: &str| {
+                ContextFixture::builder()
+                    .policy(
+                        "context",
+                        serde_json::json!({
+                            "entries": {"outbound": [
+                                {"type": "constant", "name": "route", "value": route}
+                            ]}
+                        }),
+                    )
+                    .sink(
+                        "kafka",
+                        serde_json::json!({
+                            "default": {
+                                "selector": {"type": "named", "named": ["outbound:route"]},
+                                "name": "stored_name"
+                            }
+                        }),
+                    )
+                    .compile_standalone()
             };
 
             let mut exporter =
                 new_exporter(pipeline_context(), kafka_test_config("localhost:9092"))
                     .expect("config should be valid");
             let reporter = RecordingReporter::new();
-            let (mut effect_handler, encoding_plan) =
-                test_runtime(test_pipeline_runtime_services());
-            effect_handler.set_propagation_policy(Some(policy_with_route("current")));
+            let (effect_handler, encoding_plan) = test_runtime(test_pipeline_runtime_services());
+            let effect_handler = with_local_handler_bindings(
+                effect_handler,
+                fixture_with_route("current").node_bindings("kafka"),
+            );
 
-            let (mut context, payload) = sample_pdata(SignalType::Logs).into_parts();
-            context.materialize_context(policy_with_route("stale").materialization_plan());
+            let pdata = sample_pdata(SignalType::Logs)
+                .with_metadata(fixture_with_route("stale").form_empty());
 
             let result = export_once(
                 &mut exporter,
-                OtapPdata::new(context, payload),
+                pdata,
                 &reporter,
                 &effect_handler,
                 &encoding_plan,
@@ -2641,17 +2645,19 @@ pub mod test_support {
         /// single transport header.
         fn logs_pdata(bytes: Vec<u8>, header: Option<(&str, &str)>) -> OtapPdata {
             let proto = OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes));
-            let mut context = Context::default();
-            if let Some((wire_name, value)) = header {
-                let mut headers = TransportHeaders::new();
-                headers.push(transport_header(
-                    &wire_name.to_ascii_lowercase(),
-                    wire_name,
-                    value.as_bytes(),
-                ));
-                context.set_transport_headers(headers);
+            let pdata = OtapPdata::new(Context::default(), proto.into());
+            match header {
+                Some((wire_name, value)) => {
+                    let mut headers = TransportHeaders::new();
+                    headers.push(transport_header(
+                        &wire_name.to_ascii_lowercase(),
+                        wire_name,
+                        value.as_bytes(),
+                    ));
+                    pdata.with_metadata(headers_metadata(&headers))
+                }
+                None => pdata,
             }
-            OtapPdata::new(context, proto.into())
         }
 
         /// Wraps OTLP logs bytes into an [`OtapPdata`] that carries a NACKS
@@ -6316,10 +6322,8 @@ pub mod test_support {
                     let expected_key = {
                         let pdata =
                             logs_pdata(logs_request_bytes(), Some(("X-Tenant-Id", "tenant-42")));
-                        let (context, _payload) = pdata.into_parts();
                         partition_key_from_transport_headers(
-                            context
-                                .transport_headers()
+                            captured_headers(pdata.metadata())
                                 .expect("headers")
                                 .iter()
                                 .map(HeaderValue::from),
@@ -7398,9 +7402,7 @@ pub mod test_support {
                     let payload = logs_request_bytes();
                     let pdata = logs_pdata(payload, Some(("X-Tenant-Id", "tenant-123")));
                     let expected_key = {
-                        let (context, _payload) = pdata.clone().into_parts();
-                        let headers = context
-                            .transport_headers()
+                        let headers = captured_headers(pdata.metadata())
                             .expect("pdata should carry transport headers");
                         partition_key_from_transport_headers(headers.iter().map(HeaderValue::from))
                             .expect("headers should produce a partition key")
@@ -7437,32 +7439,25 @@ pub mod test_support {
                 MSG_FORMAT_HEADER,
                 b"attacker-override",
             ));
-            let mut context = Context::default();
-            context.set_transport_headers(transport);
 
             // Propagate all captured headers, preserving wire names.
-            let policy = HeaderPropagationPolicy::new(
-                PropagationDefault {
-                    selector: PropagationSelector {
-                        selector_type: PropagationSelectorType::AllCaptured,
-                        named: None,
-                    },
-                    ..Default::default()
-                },
-                vec![],
-            );
-            let policy = CompiledHeaderPropagationPolicy::compile_standalone(
-                policy,
-                &ContextPolicy::default(),
-            )
-            .expect("propagation policy compiles");
+            let fixture = ContextFixture::builder()
+                .capture(&transport)
+                .sink(
+                    "kafka",
+                    serde_json::json!({"default": {"selector": {"type": "all_captured"}}}),
+                )
+                .compile_standalone();
+            let context = Context::default().with_metadata(fixture.form_captured(&transport, None));
             let (_rx, reporter) = MetricsReporter::create_new_and_receiver(1);
-            let mut eh: EffectHandler<OtapPdata> = EffectHandler::new(
-                test_node("hdr-test"),
-                reporter,
-                test_pipeline_runtime_services(),
+            let eh: EffectHandler<OtapPdata> = with_local_handler_bindings(
+                EffectHandler::new(
+                    test_node("hdr-test"),
+                    reporter,
+                    test_pipeline_runtime_services(),
+                ),
+                fixture.node_bindings("kafka"),
             );
-            eh.set_propagation_policy(Some(policy));
 
             let headers = KafkaExporter::build_kafka_headers(
                 MessageFormat::OtlpProto,
@@ -7509,46 +7504,50 @@ pub mod test_support {
         /// Guarantees: generated members are appended beside the required format header.
         #[test]
         fn build_kafka_headers_propagates_generated_members_without_captured_headers() {
-            let context_policy: ContextPolicy = serde_json::from_value(serde_json::json!({
-                "entries": {
-                    "outbound": [
-                        {
-                            "type": "constant",
-                            "name": "route",
-                            "value": "kafka"
-                        },
-                        {
-                            "type": "randomness",
-                            "name": "correlation",
-                            "value": "uuid7"
+            let fixture = ContextFixture::builder()
+                .policy(
+                    "context",
+                    serde_json::json!({
+                        "entries": {
+                            "outbound": [
+                                {
+                                    "type": "constant",
+                                    "name": "route",
+                                    "value": "kafka"
+                                },
+                                {
+                                    "type": "randomness",
+                                    "name": "correlation",
+                                    "value": "uuid7"
+                                }
+                            ]
                         }
-                    ]
-                }
-            }))
-            .expect("valid generated context policy");
-            let propagation: HeaderPropagationPolicy = serde_json::from_value(serde_json::json!({
-                "default": {
-                    "selector": {
-                        "type": "named",
-                        "named": ["outbound:route", "outbound:correlation"]
-                    },
-                    "name": "stored_name"
-                }
-            }))
-            .expect("valid propagation policy");
-            let policy =
-                CompiledHeaderPropagationPolicy::compile_standalone(propagation, &context_policy)
-                    .expect("generated propagation policy compiles");
-            let mut context = Context::default();
-            context.materialize_context(policy.materialization_plan());
+                    }),
+                )
+                .sink(
+                    "kafka",
+                    serde_json::json!({
+                        "default": {
+                            "selector": {
+                                "type": "named",
+                                "named": ["outbound:route", "outbound:correlation"]
+                            },
+                            "name": "stored_name"
+                        }
+                    }),
+                )
+                .compile_standalone();
+            let context = Context::default().with_metadata(fixture.form_empty());
 
             let (_rx, reporter) = MetricsReporter::create_new_and_receiver(1);
-            let mut effect_handler: EffectHandler<OtapPdata> = EffectHandler::new(
-                test_node("generated-header-test"),
-                reporter,
-                test_pipeline_runtime_services(),
+            let effect_handler: EffectHandler<OtapPdata> = with_local_handler_bindings(
+                EffectHandler::new(
+                    test_node("generated-header-test"),
+                    reporter,
+                    test_pipeline_runtime_services(),
+                ),
+                fixture.node_bindings("kafka"),
             );
-            effect_handler.set_propagation_policy(Some(policy));
 
             let headers = KafkaExporter::build_kafka_headers(
                 MessageFormat::OtlpProto,
@@ -7589,8 +7588,7 @@ pub mod test_support {
         fn build_kafka_headers_writes_only_format_header_without_policy() {
             let mut transport = TransportHeaders::new();
             transport.push(transport_header("x-tenant-id", "X-Tenant-Id", b"acme"));
-            let mut context = Context::default();
-            context.set_transport_headers(transport);
+            let context = Context::default().with_metadata(headers_metadata(&transport));
 
             let (_rx, reporter) = MetricsReporter::create_new_and_receiver(1);
             let eh: EffectHandler<OtapPdata> = EffectHandler::new(

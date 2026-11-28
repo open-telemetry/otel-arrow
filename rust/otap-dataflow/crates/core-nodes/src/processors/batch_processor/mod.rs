@@ -1676,6 +1676,7 @@ mod tests {
     };
     use otel_arrow_dfe_engine::message::Message;
     use otel_arrow_dfe_engine::node::Node;
+    use otel_arrow_dfe_engine::testing::context::{peer as peer_of, peer_metadata};
     use otel_arrow_dfe_engine::testing::liveness::next_completion;
     use otel_arrow_dfe_engine::testing::processor::TestRuntime;
     use otel_arrow_dfe_engine::testing::test_node;
@@ -4662,7 +4663,7 @@ mod tests {
     }
 
     /// Scenario: every input merged into one output batch carries the same
-    /// `peer_addr`. Guarantee: the flushed batch's `peer_addr` equals that
+    /// `peer_addr`. Guarantees: the flushed batch's `peer_addr` equals that
     /// common address (single-peer batches keep working as if no merge
     /// happened).
     #[test]
@@ -4685,7 +4686,8 @@ mod tests {
                 for _ in 0..2 {
                     let rec =
                         encode_logs_otap_batch(&datagen.generate_logs()).expect("encode logs");
-                    let pdata = OtapPdata::new_default(rec.into()).with_peer_addr(peer);
+                    let pdata =
+                        OtapPdata::new_default(rec.into()).with_metadata(peer_metadata(peer));
                     ctx.process(Message::PData(pdata))
                         .await
                         .expect("process input");
@@ -4695,7 +4697,7 @@ mod tests {
                 assert!(!outputs.is_empty(), "size flush should produce a batch");
                 for out in outputs {
                     assert_eq!(
-                        out.peer_addr(),
+                        peer_of(out.metadata()),
                         Some(peer),
                         "single-peer batch must preserve peer_addr"
                     );
@@ -4705,7 +4707,7 @@ mod tests {
     }
 
     /// Scenario: inputs merged into one output batch came from distinct
-    /// peers. Guarantee: the flushed batch's `peer_addr` is `None` (no
+    /// peers. Guarantees: the flushed batch's `peer_addr` is `None` (no
     /// silent misattribution to one arbitrary contributor).
     #[test]
     fn test_flush_peer_addr_dropped_when_mixed_peers() {
@@ -4727,7 +4729,8 @@ mod tests {
                 for peer in [peer_a, peer_b] {
                     let rec =
                         encode_logs_otap_batch(&datagen.generate_logs()).expect("encode logs");
-                    let pdata = OtapPdata::new_default(rec.into()).with_peer_addr(peer);
+                    let pdata =
+                        OtapPdata::new_default(rec.into()).with_metadata(peer_metadata(peer));
                     ctx.process(Message::PData(pdata))
                         .await
                         .expect("process input");
@@ -4737,7 +4740,7 @@ mod tests {
                 assert!(!outputs.is_empty(), "size flush should produce a batch");
                 for out in outputs {
                     assert_eq!(
-                        out.peer_addr(),
+                        peer_of(out.metadata()),
                         None,
                         "mixed-peer batch must not be attributed to one peer"
                     );
@@ -4747,7 +4750,7 @@ mod tests {
     }
 
     /// Scenario: at least one input has no peer_addr (e.g. came from a
-    /// sourceless receiver). Guarantee: the flushed batch's `peer_addr`
+    /// sourceless receiver). Guarantees: the flushed batch's `peer_addr`
     /// is `None`.
     #[test]
     fn test_flush_peer_addr_dropped_when_any_input_peerless() {
@@ -4768,7 +4771,7 @@ mod tests {
                 // First input has a peer, second does not.
                 let rec1 = encode_logs_otap_batch(&datagen.generate_logs()).expect("encode logs");
                 ctx.process(Message::PData(
-                    OtapPdata::new_default(rec1.into()).with_peer_addr(peer),
+                    OtapPdata::new_default(rec1.into()).with_metadata(peer_metadata(peer)),
                 ))
                 .await
                 .expect("process input");
@@ -4782,7 +4785,7 @@ mod tests {
                 assert!(!outputs.is_empty(), "size flush should produce a batch");
                 for out in outputs {
                     assert_eq!(
-                        out.peer_addr(),
+                        peer_of(out.metadata()),
                         None,
                         "any peerless contributor must drop peer_addr on the merged batch"
                     );
@@ -4820,7 +4823,7 @@ mod tests {
     /// triggers a 5-item size flush whose contents come from the retained
     /// portion (peer A) + the new input (peer A).
     ///
-    /// Guarantee: the second flush's batch carries `peer_addr = A` -- the
+    /// Guarantees: the second flush's batch carries `peer_addr = A` -- the
     /// retained portion correctly remembered its single contributor's peer.
     #[test]
     fn test_take_remaining_preserves_peer_addr_single_input() {
@@ -4841,7 +4844,7 @@ mod tests {
                 // tail is retained because 3 < min_size=4.
                 let big = encode_logs_otap_batch(&logs_with_n_records(0, 8)).expect("encode logs");
                 ctx.process(Message::PData(
-                    OtapPdata::new_default(big.into()).with_peer_addr(peer),
+                    OtapPdata::new_default(big.into()).with_metadata(peer_metadata(peer)),
                 ))
                 .await
                 .expect("process big input");
@@ -4849,7 +4852,7 @@ mod tests {
                 let first = ctx.drain_pdata().await;
                 assert_eq!(first.len(), 1, "first flush should emit one batch");
                 assert_eq!(
-                    first[0].peer_addr(),
+                    peer_of(first[0].metadata()),
                     Some(peer),
                     "single-peer first batch must preserve peer_addr"
                 );
@@ -4858,7 +4861,7 @@ mod tests {
                 let extra =
                     encode_logs_otap_batch(&logs_with_n_records(1, 2)).expect("encode logs");
                 ctx.process(Message::PData(
-                    OtapPdata::new_default(extra.into()).with_peer_addr(peer),
+                    OtapPdata::new_default(extra.into()).with_metadata(peer_metadata(peer)),
                 ))
                 .await
                 .expect("process follow-up input");
@@ -4866,7 +4869,7 @@ mod tests {
                 let second = ctx.drain_pdata().await;
                 assert_eq!(second.len(), 1, "second flush should emit one batch");
                 assert_eq!(
-                    second[0].peer_addr(),
+                    peer_of(second[0].metadata()),
                     Some(peer),
                     "single-input retained partial must preserve peer_addr on the next merge"
                 );
@@ -4883,7 +4886,7 @@ mod tests {
     /// a follow-up 2-item input from peer A triggers a second size flush of
     /// the retained item plus both new inputs.
     ///
-    /// Guarantee: the second flush's batch carries `peer_addr = A`, even
+    /// Guarantees: the second flush's batch carries `peer_addr = A`, even
     /// though it merges the retained portion with more than one input --
     /// because all contributors agreed.
     #[test]
@@ -4905,7 +4908,7 @@ mod tests {
                     let rec = encode_logs_otap_batch(&logs_with_n_records(idx, count))
                         .expect("encode logs");
                     ctx.process(Message::PData(
-                        OtapPdata::new_default(rec.into()).with_peer_addr(peer),
+                        OtapPdata::new_default(rec.into()).with_metadata(peer_metadata(peer)),
                     ))
                     .await
                     .expect("process input");
@@ -4913,12 +4916,12 @@ mod tests {
 
                 let first = ctx.drain_pdata().await;
                 assert_eq!(first.len(), 1, "first flush should emit one batch");
-                assert_eq!(first[0].peer_addr(), Some(peer));
+                assert_eq!(peer_of(first[0].metadata()), Some(peer));
 
                 let extra =
                     encode_logs_otap_batch(&logs_with_n_records(3, 2)).expect("encode logs");
                 ctx.process(Message::PData(
-                    OtapPdata::new_default(extra.into()).with_peer_addr(peer),
+                    OtapPdata::new_default(extra.into()).with_metadata(peer_metadata(peer)),
                 ))
                 .await
                 .expect("process follow-up input");
@@ -4926,7 +4929,7 @@ mod tests {
                 let second = ctx.drain_pdata().await;
                 assert_eq!(second.len(), 1, "second flush should emit one batch");
                 assert_eq!(
-                    second[0].peer_addr(),
+                    peer_of(second[0].metadata()),
                     Some(peer),
                     "multi-input retained partial with one shared peer must preserve it"
                 );
@@ -4943,7 +4946,7 @@ mod tests {
     /// follow-up 2-item input from peer A triggers a second size flush that
     /// merges the retained item (A), the peer B input, and the new input (A).
     ///
-    /// Guarantee: the second flush's batch carries `peer_addr = None` --
+    /// Guarantees: the second flush's batch carries `peer_addr = None` --
     /// the retained portion merged with a different peer is not
     /// misattributed to one arbitrary contributor.
     #[test]
@@ -4967,7 +4970,7 @@ mod tests {
                     let rec = encode_logs_otap_batch(&logs_with_n_records(idx, count))
                         .expect("encode logs");
                     ctx.process(Message::PData(
-                        OtapPdata::new_default(rec.into()).with_peer_addr(peer),
+                        OtapPdata::new_default(rec.into()).with_metadata(peer_metadata(peer)),
                     ))
                     .await
                     .expect("process input");
@@ -4978,7 +4981,7 @@ mod tests {
                 let extra =
                     encode_logs_otap_batch(&logs_with_n_records(3, 2)).expect("encode logs");
                 ctx.process(Message::PData(
-                    OtapPdata::new_default(extra.into()).with_peer_addr(peer_a),
+                    OtapPdata::new_default(extra.into()).with_metadata(peer_metadata(peer_a)),
                 ))
                 .await
                 .expect("process follow-up input");
@@ -4986,7 +4989,7 @@ mod tests {
                 let second = ctx.drain_pdata().await;
                 assert_eq!(second.len(), 1, "second flush should emit one batch");
                 assert_eq!(
-                    second[0].peer_addr(),
+                    peer_of(second[0].metadata()),
                     None,
                     "retained partial spanning distinct peers must not be attributed to one"
                 );

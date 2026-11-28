@@ -315,15 +315,18 @@ mod tests {
 
     // ---- partition_key_for_signal tests ----
 
+    use otel_arrow_dfe_engine::testing::context::headers_metadata;
     use otel_arrow_dfe_otap::pdata::Context;
 
+    /// Scenario: a context carries captured headers but the signal does not
+    /// partition by transport headers (no compiled headers read).
+    /// Guarantees: no partition key is derived from the captured headers.
     #[test]
     fn test_partition_key_for_signal_disabled_returns_none() {
         let mut headers = TransportHeaders::new();
         headers.push(transport_header_text("x_tenant_id", "X-Tenant-Id", b"t"));
-        let mut context = Context::default();
-        context.set_transport_headers(headers);
-        let key = partition_key_for_signal(None, context.metadata());
+        let metadata = headers_metadata(&headers);
+        let key = partition_key_for_signal(None, &metadata);
         assert!(key.is_none());
     }
 
@@ -334,6 +337,10 @@ mod tests {
         assert!(key.is_none());
     }
 
+    /// Scenario: a signal partitions by transport headers and the context
+    /// carries a captured header.
+    /// Guarantees: the key derived through the compiled headers read equals
+    /// the key computed directly from the same headers.
     #[test]
     fn test_partition_key_for_signal_enabled_with_headers() {
         let mut headers = TransportHeaders::new();
@@ -343,9 +350,8 @@ mod tests {
             b"tenant-123",
         ));
 
-        let mut context = Context::default();
-        context.set_transport_headers(headers.clone());
-        let key = partition_key_for_signal(Some(&headers_read()), context.metadata());
+        let metadata = headers_metadata(&headers);
+        let key = partition_key_for_signal(Some(&headers_read()), &metadata);
 
         // Should match what partition_key_from_transport_headers produces.
         let expected = key_of(&headers);

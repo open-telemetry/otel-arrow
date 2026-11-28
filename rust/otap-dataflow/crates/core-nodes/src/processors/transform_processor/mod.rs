@@ -670,8 +670,8 @@ mod test {
         local::message::LocalSender,
         message::Sender,
         node::NodeWithPDataSender,
-        pdata_context::Metadata,
         testing::{
+            context::{ContextFixture, captured_headers, headers_metadata, peer},
             processor::{TEST_OUT_PORT_NAME, TestContext, TestRuntime},
             single_node_test_context, test_node, test_nodes,
         },
@@ -2217,9 +2217,8 @@ mod test {
                     "bar".to_string(),
                 ));
 
-                let mut metadata = Metadata::default();
-                metadata.set_transport_headers(transport_headers);
-                let context = Context::default().with_metadata(metadata);
+                let context =
+                    Context::default().with_metadata(headers_metadata(&transport_headers));
                 let pdata1 = OtapPdata::new(context, batch1.into());
 
                 // create another batch that doesn't have the transport header
@@ -2271,9 +2270,8 @@ mod test {
                     ContextEntryName::try_from("foo").unwrap(),
                     "bar".to_string(),
                 ));
-                let mut metadata = Metadata::default();
-                metadata.set_transport_headers(transport_headers);
-                let context = Context::default().with_metadata(metadata);
+                let context =
+                    Context::default().with_metadata(headers_metadata(&transport_headers));
                 let pdata1 = OtapPdata::new(context, batch1.into());
 
                 // batch without the transport header -- should be filtered out
@@ -2329,9 +2327,8 @@ mod test {
                     ContextEntryName::try_from("foo").unwrap(),
                     "bar".to_string(),
                 ));
-                let mut metadata = Metadata::default();
-                metadata.set_transport_headers(transport_headers);
-                let context = Context::default().with_metadata(metadata);
+                let context =
+                    Context::default().with_metadata(headers_metadata(&transport_headers));
                 let pdata1 = OtapPdata::new(context, batch.clone().into());
 
                 // create another batch that doesn't have the transport header
@@ -2729,8 +2726,12 @@ mod test {
                     1,
                     upstream_node_id,
                 )
-                .with_transport_headers(headers.clone())
-                .with_peer_addr(peer_addr);
+                .with_metadata(
+                    ContextFixture::builder()
+                        .capture(&headers)
+                        .compile_standalone()
+                        .form_captured(&headers, Some(peer_addr)),
+                );
 
                 ctx.process(Message::PData(pdata))
                     .await
@@ -2747,14 +2748,12 @@ mod test {
                     ("info_port", &info_ctx),
                 ] {
                     assert_eq!(
-                        context
-                            .transport_headers()
-                            .expect("transport headers retained"),
-                        &headers,
+                        captured_headers(context.metadata()).expect("transport headers retained"),
+                        headers,
                         "{port} lost the inbound transport headers"
                     );
                     assert_eq!(
-                        context.peer_addr(),
+                        peer(context.metadata()),
                         Some(peer_addr),
                         "{port} lost the inbound peer address"
                     );

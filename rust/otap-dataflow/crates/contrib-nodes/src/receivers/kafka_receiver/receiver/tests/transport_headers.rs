@@ -7,6 +7,7 @@ use super::*;
 use crate::receivers::kafka_receiver::testing::receiver_node;
 use otel_arrow_dfe_config::context::transport_policy::HeaderCapturePolicy;
 use otel_arrow_dfe_core_nodes::exporters::noop_exporter::NOOP_EXPORTER_URN;
+use otel_arrow_dfe_engine::testing::context::captured_headers;
 use otel_arrow_dfe_engine::testing::install_test_context_bindings;
 use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
 
@@ -397,9 +398,8 @@ async fn test_kafka_receiver_capture_policy_captures_headers() {
             let pdata = receiver.recv_pdata().await;
 
             // Verify transport headers were captured.
-            let transport_headers = pdata
-                .transport_headers()
-                .expect("transport_headers should be set");
+            let transport_headers =
+                captured_headers(pdata.metadata()).expect("transport_headers should be set");
 
             // Two headers should be captured (X-Tenant-Id and X-Request-Id).
             assert_eq!(
@@ -481,7 +481,7 @@ async fn test_kafka_receiver_no_capture_policy_no_transport_headers() {
 
             // Transport headers should NOT be set when no capture policy is configured.
             assert!(
-                pdata.transport_headers().is_none(),
+                captured_headers(pdata.metadata()).is_none(),
                 "transport_headers should be None when no capture policy is configured"
             );
 
@@ -560,9 +560,8 @@ async fn test_kafka_receiver_capture_policy_coexists_with_resource_attrs_from_he
             let mut pdata = receiver.recv_pdata().await;
 
             // 1. Verify transport headers were captured (capture policy).
-            let transport_headers = pdata
-                .transport_headers()
-                .expect("transport_headers should be set");
+            let transport_headers =
+                captured_headers(pdata.metadata()).expect("transport_headers should be set");
             let tenant_headers: Vec<_> = transport_headers.find_by_name("tenant_id").collect();
             assert_eq!(tenant_headers.len(), 1);
             assert_eq!(tenant_headers[0].value_as_str(), Some("acme-corp"));
@@ -657,8 +656,7 @@ async fn test_kafka_receiver_capture_policy_otap_format() {
             let pdata = receiver.recv_pdata().await;
 
             // Verify transport headers were captured for OTAP format.
-            let transport_headers = pdata
-                .transport_headers()
+            let transport_headers = captured_headers(pdata.metadata())
                 .expect("transport_headers should be set for OTAP messages");
             let tenant_headers: Vec<_> = transport_headers.find_by_name("tenant_id").collect();
             assert_eq!(tenant_headers.len(), 1);

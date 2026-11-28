@@ -627,18 +627,32 @@ where
         None
     };
 
-    let (metadata, _stats) = effect_handler
-        .form_context(Arrival {
-            headers: ArrivalHeaders::Pairs(&[]),
-            identity: None,
-            peer: peer_addr,
-        })
-        .map_err(|e| {
+    let (metadata, _stats) = match effect_handler.form_context(Arrival {
+        headers: ArrivalHeaders::Pairs(&[]),
+        identity: None,
+        peer: peer_addr,
+    }) {
+        Ok(formed) => formed,
+        Err(e) => {
+            // Release the rejected batch and its slot before waiting for the client.
+            drop(batch);
+            drop(cancel_rx);
             if let Some(metrics) = receiver_metrics {
                 metrics.record_item_rejection(ReceiverRejectionErrorType::Internal);
             }
-            otel_error!("otap.batch.context_failed", error = %e, message = "Arrival context formation failed. Closing stream");
-        })?;
+            otel_error!("otap.batch.context_failed", batch_id = batch_id, error = %e, message = "Arrival context formation failed. Closing stream");
+            tx.send(Ok(BatchStatus {
+                batch_id,
+                status_code: StatusCode::Internal as i32,
+                status_message: "Arrival context formation failed".to_owned(),
+            }))
+            .await
+            .map_err(|e| {
+                otel_error!("otap.response.send_failed", error = ?e, message = "Error sending BatchStatus response");
+            })?;
+            return Err(());
+        }
+    };
     let mut otap_pdata = OtapPdata::new(metadata.into(), otap_batch(batch).into());
     if let Some((guard, _)) = &cancel_rx {
         effect_handler.subscribe_to(
@@ -794,6 +808,64 @@ mod tests {
         fn record_batch_completed(&self, _signal: SignalType) {
             let _ = self.batches_completed.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    /// Scenario: A logs batch cannot form its arrival context and its response channel is full.
+    /// Guarantees: The ACK slot is released before the wait, no pdata is sent, and the stream
+    /// handler receives a close result after the client gets an Internal status for that batch.
+    #[tokio::test]
+    async fn context_failure_reports_batch_before_closing_stream() {
+        use otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel;
+        use otel_arrow_dfe_engine::shared::message::SharedSender;
+        use otel_arrow_dfe_engine::testing::{test_node, test_pipeline_runtime_services};
+        use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+        use tokio::sync::mpsc;
+
+        let (pdata_tx, mut pdata_rx) = mpsc::channel(1);
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(1);
+        let (_metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(1);
+        let handler = shared::EffectHandler::new(
+            test_node("otap_context_failure"),
+            [("default".into(), SharedSender::mpsc(pdata_tx))].into(),
+            None,
+            ctrl_tx,
+            reporter,
+            test_pipeline_runtime_services(),
+        );
+        let (tx, mut rx) = mpsc::channel(1);
+        tx.try_send(Ok(BatchStatus::default()))
+            .expect("fill channel");
+        let state = SharedState::new(1);
+        let mut consumer = Consumer::default();
+        let admission = SharedReceiverAdmissionState::default();
+        let accept = accept_data(
+            OtapArrowRecords::Logs,
+            SignalType::Logs,
+            &mut consumer,
+            BatchArrowRecords {
+                batch_id: 42,
+                ..Default::default()
+            },
+            &handler,
+            Some(state.clone()),
+            &admission,
+            None,
+            &tx,
+            None,
+        );
+        tokio::pin!(accept);
+
+        assert!(accept.as_mut().now_or_never().is_none());
+        assert!(state.is_empty(), "rejection retained the ACK slot");
+        let _ = rx.try_recv().expect("prefilled response").expect("status");
+        assert!(accept.await.is_err(), "stream must close after rejection");
+        let status = rx.try_recv().expect("batch rejection").expect("status");
+        assert_eq!(status.batch_id, 42);
+        assert_eq!(status.status_code, StatusCode::Internal as i32);
+        assert!(matches!(
+            pdata_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
     }
 
     /// Scenario: An admitted OTAP batch waits for capacity on its client response channel.

@@ -6,6 +6,7 @@
 use bytes::Bytes;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_engine::local::exporter::EffectHandler;
+use otel_arrow_dfe_engine::testing::context::{peer as context_peer, peer_metadata};
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata, PdataEffectHandlerExtension};
 use otel_arrow_dfe_pdata_codec::builtins::syslog::{SyslogBatchBuilder, resolve_syslog};
 use otel_arrow_dfe_pdata_codec::{
@@ -51,7 +52,7 @@ async fn cooperative_failure_recovers_after_partial_progress() {
     let payload = codec.admit(SignalType::Logs, bytes.clone()).unwrap().into();
     let payload = otel_arrow_dfe_pdata_codec::testing::with_cached_item_count(payload, 512);
     let peer = "127.0.0.1:1234".parse().unwrap();
-    let pdata = OtapPdata::new(Context::default(), payload).with_peer_addr(peer);
+    let pdata = OtapPdata::new(Context::default(), payload).with_metadata(peer_metadata(peer));
     let mut conversion = Box::pin(handler.materialize_otap(pdata));
     assert!(matches!(
         conversion
@@ -69,7 +70,7 @@ async fn cooperative_failure_recovers_after_partial_progress() {
     let error = conversion.await.unwrap_err();
     assert!(!format!("{error:?}").contains("SECRET_TELEMETRY"));
     let (_, recovered) = error.into_parts();
-    assert_eq!(recovered.peer_addr(), Some(peer));
+    assert_eq!(context_peer(recovered.metadata()), Some(peer));
     assert_eq!(recovered.signal_type(), SignalType::Logs);
     assert_eq!(
         recovered.payload_ref().encoding(),

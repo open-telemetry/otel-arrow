@@ -204,7 +204,7 @@ mod tests {
     use otel_arrow_dfe_config::context::transport_headers::{
         TransportHeader, TransportHeaders, ValueKind,
     };
-    use otel_arrow_dfe_engine::pdata_context::ContextMaterializationPlan;
+    use otel_arrow_dfe_engine::testing::context::{ContextFixture, headers_metadata};
     use otel_arrow_dfe_otap::pdata::Context;
 
     // ---- Test helpers ----
@@ -216,14 +216,13 @@ mod tests {
         )
     }
 
+    /// Returns a context holding exactly `headers`, as captured at arrival.
     fn context_with_headers(headers: Vec<TransportHeader>) -> Context {
         let mut th = TransportHeaders::new();
         for h in headers {
             th.push(h);
         }
-        let mut ctx = Context::default();
-        ctx.set_transport_headers(th);
-        ctx
+        Context::default().with_metadata(headers_metadata(&th))
     }
 
     fn make_signal_config(topic: &str, header_key: Option<&str>) -> SignalConfig {
@@ -245,11 +244,14 @@ mod tests {
         metrics: &mut KafkaExporterMetrics,
     ) -> Result<Cow<'a, str>, KafkaExporterError> {
         let read = config.topic_from_transport_header().map(|name| {
-            ValueRead::compile_for_test(
-                &TopicRouter::topic_read_selector(name),
-                &ContextMaterializationPlan::default(),
-            )
-            .expect("topic read")
+            let selector = TopicRouter::topic_read_selector(name);
+            ContextFixture::builder()
+                .consumer("topic_router", [selector.clone()])
+                .compile_standalone()
+                .node_bindings("topic_router")
+                .value(&selector)
+                .expect("topic read")
+                .clone()
         });
         TopicRouter::resolve(
             config,
@@ -294,9 +296,23 @@ mod tests {
         );
         assert_eq!(headers_read.read(empty.metadata()).count(), 0);
 
+        // Distinct wire names let one arrival capture stored names that differ
+        // only by ASCII case.
         let context = context_with_headers(vec![
-            make_transport_header("topic", "first"),
-            make_transport_header("Topic", "second"),
+            TransportHeader::captured(
+                "topic".try_into().expect("header name"),
+                "x-topic-lower",
+                true,
+                ValueKind::Text,
+                b"first".to_vec(),
+            ),
+            TransportHeader::captured(
+                "Topic".try_into().expect("header name"),
+                "x-topic-upper",
+                true,
+                ValueKind::Text,
+                b"second".to_vec(),
+            ),
             TransportHeader::binary("other".try_into().expect("header name"), b"\xff\0"),
         ]);
         let topic = TopicRouter::header_topic(Some(read), context.metadata())

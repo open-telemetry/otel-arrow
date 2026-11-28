@@ -864,6 +864,7 @@ mod tests {
     use otel_arrow_dfe_engine::pdata_context::ContextDeclaration;
     use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
     use otel_arrow_dfe_engine::testing::{
+        context::{captured_headers, materialized_member},
         install_test_context_bindings,
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
         test_node,
@@ -1706,8 +1707,7 @@ mod tests {
             Box::pin(async move {
                 let pdata = ctx.recv().await.expect("should receive at least one pdata");
 
-                let headers = pdata
-                    .transport_headers()
+                let headers = captured_headers(pdata.metadata())
                     .expect("pdata should have transport headers");
                 let tenant: Vec<_> = headers.find_by_name("x-tenant-id").collect();
                 assert_eq!(
@@ -1805,18 +1805,12 @@ groups:
 
         let validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
             Box::pin(async move {
-                let idempotency = context_name("idempotency");
-                let id = context_name("id");
                 let mut ids = Vec::new();
                 for _ in 0..2 {
                     let pdata = ctx.recv().await.expect("generator emits two payloads");
-                    let member = pdata
-                        .metadata()
-                        .materialized_context()
-                        .and_then(|context| context.entry(&idempotency))
-                        .and_then(|entry| entry.member(&id))
+                    let member = materialized_member(pdata.metadata(), "idempotency", "id")
                         .expect("payload carries the idempotency composite");
-                    ids.push(member.values().values()[0].bytes().to_vec());
+                    ids.push(member.values()[0].bytes().to_vec());
                 }
                 ctx.send_control_msg(NodeControlMsg::Shutdown {
                     deadline: std::time::Instant::now(),
@@ -1883,8 +1877,7 @@ groups:
             Box::pin(async move {
                 let pdata = ctx.recv().await.expect("should receive at least one pdata");
 
-                let headers = pdata
-                    .transport_headers()
+                let headers = captured_headers(pdata.metadata())
                     .expect("pdata should have transport headers");
                 let request_id: Vec<_> = headers.find_by_name("x-request-id").collect();
                 assert_eq!(
@@ -1965,8 +1958,7 @@ groups:
             Box::pin(async move {
                 let pdata = ctx.recv().await.expect("should receive at least one pdata");
 
-                let headers = pdata
-                    .transport_headers()
+                let headers = captured_headers(pdata.metadata())
                     .expect("pdata should have transport headers");
                 let trace_bin: Vec<_> = headers.find_by_name("x-trace-bin").collect();
                 assert_eq!(
@@ -2042,7 +2034,7 @@ groups:
                 let pdata = ctx.recv().await.expect("should receive at least one pdata");
 
                 assert!(
-                    pdata.transport_headers().is_none(),
+                    captured_headers(pdata.metadata()).is_none(),
                     "pdata should NOT have transport headers when config has no transport_headers"
                 );
             }) as Pin<Box<dyn Future<Output = ()>>>
@@ -2084,8 +2076,7 @@ groups:
 
         let config: Config = serde_json::from_value(config).unwrap();
         let context = generator_context(&config);
-        let mut runtime_names = context
-            .transport_headers()
+        let mut runtime_names = captured_headers(&context)
             .expect("configured headers produce transport headers")
             .iter()
             .map(|header| header.name.as_str().to_owned())
@@ -2139,9 +2130,8 @@ groups:
         )
         .with_transport_headers(config_headers);
         let context = generator_context(&config);
-        let headers = context
-            .transport_headers()
-            .expect("configured headers produce transport headers");
+        let headers =
+            captured_headers(&context).expect("configured headers produce transport headers");
         let request_header = headers
             .iter()
             .find(|header| header.name.as_str() == "X-Request-Id")

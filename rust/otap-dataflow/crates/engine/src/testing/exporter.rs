@@ -397,6 +397,29 @@ pub fn with_propagation_policy<PData>(
     exporter.with_node_bindings(Some(Arc::new(bindings)))
 }
 
+/// Installs compiled bindings on a hand-built exporter wrapper, as the
+/// pipeline build does.
+#[cfg(any(test, feature = "test-utils"))]
+#[must_use]
+pub fn with_node_bindings<PData>(
+    exporter: ExporterWrapper<PData>,
+    bindings: Arc<crate::pdata_context::NodeBindings>,
+) -> ExporterWrapper<PData> {
+    exporter.with_node_bindings(Some(bindings))
+}
+
+/// Installs compiled bindings on a hand-built local exporter effect handler,
+/// as the pipeline build does.
+#[cfg(any(test, feature = "test-utils"))]
+#[must_use]
+pub fn with_local_handler_bindings<PData>(
+    mut handler: crate::local::exporter::EffectHandler<PData>,
+    bindings: Arc<crate::pdata_context::NodeBindings>,
+) -> crate::local::exporter::EffectHandler<PData> {
+    handler.set_node_bindings(bindings);
+    handler
+}
+
 /// Creates an exporter using its factory function with minimal test setup
 pub fn create_exporter_from_factory<PData: Clone + Debug + 'static>(
     factory: &ExporterFactory<PData>,

@@ -6300,6 +6300,7 @@ connections:
 #[test]
 fn delete_preserves_installed_context_runtime_requirements() {
     use otel_arrow_dfe_engine::pdata_context::{Arrival, ArrivalHeaders};
+    use otel_arrow_dfe_engine::testing::context::captured_headers;
 
     let config = OtelDataflowSpec::from_yaml(
         r#"
@@ -6390,11 +6391,8 @@ groups:
                 peer: None,
             })
             .expect("arrival forms");
-        let header = metadata
-            .transport_headers()
-            .expect("captured headers")
-            .get(0)
-            .expect("captured tenant");
+        let headers = captured_headers(&metadata).expect("captured headers");
+        let header = headers.get(0).expect("captured tenant");
         assert_eq!(header.value.original_name, original_name);
     }
 }
